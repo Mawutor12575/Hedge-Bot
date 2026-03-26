@@ -18,6 +18,10 @@ let sessionStats = {
 let autoCloseInterval = null;
 let currentPrice = null;
 let currentAccountType = 'demo'; // 'demo' or 'real'
+let isConnected = false;
+let reconnectAttempts = 0;
+let maxReconnectAttempts = 5;
+let reconnectDelay = 1000;
 
 // DOM Elements
 const loginBtn = document.getElementById('connect-token-btn');
@@ -97,16 +101,25 @@ function connectWebSocket(token) {
         ws.close();
     }
     
-    ws = new WebSocket('wss://ws.deriv.com/websockets/v3?app_id=1089');
+    // Use the same endpoint as 10X AI which is working
+    ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
     
     ws.onopen = () => {
-        ws.send(JSON.stringify({ authorize: token }));
         addLogEntry('WebSocket connected, authorizing...', 'system');
+        // Send authorize request
+        ws.send(JSON.stringify({ 
+            authorize: token,
+            req_id: Date.now()
+        }));
     };
     
     ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        handleDerivMessage(data);
+        try {
+            const data = JSON.parse(event.data);
+            handleDerivMessage(data);
+        } catch (error) {
+            addLogEntry(`Error parsing message: ${error.message}`, 'system');
+        }
     };
     
     ws.onerror = (error) => {
@@ -114,10 +127,11 @@ function connectWebSocket(token) {
         console.error('WebSocket error:', error);
     };
     
-    ws.onclose = () => {
-        addLogEntry('WebSocket disconnected.', 'system');
+    ws.onclose = (event) => {
+        addLogEntry(`WebSocket disconnected. Code: ${event.code}`, 'system');
         updateAuthStatus(false);
         enableControls(false);
+        isConnected = false;
         
         // Clear positions on disconnect
         currentPositions = { higher: null, lower: null };
@@ -129,11 +143,23 @@ function connectWebSocket(token) {
             const el = document.getElementById(id);
             if (el) el.textContent = '$0.00';
         });
+        
+        // Attempt reconnect if bot was running
+        if (isBotRunning && reconnectAttempts < maxReconnectAttempts) {
+            reconnectAttempts++;
+            addLogEntry(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`, 'system');
+            setTimeout(() => connectWebSocket(token), reconnectDelay);
+            reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+        } else {
+            reconnectAttempts = 0;
+            reconnectDelay = 1000;
+        }
     };
 }
 
 // Handle messages from Deriv
 function handleDerivMessage(data) {
+    // Handle error responses
     if (data.error) {
         addLogEntry(`API Error: ${data.error.message}`, 'system');
         
@@ -143,14 +169,19 @@ function handleDerivMessage(data) {
             updateAuthStatus(false);
             enableControls(false);
             localStorage.removeItem('deriv_token');
+            if (ws) ws.close();
         }
         return;
     }
     
+    // Handle authorization response
     if (data.authorize) {
         // Determine account type from loginid
         const loginid = data.authorize.loginid;
         currentAccountType = loginid && loginid.startsWith('VRTC') ? 'demo' : 'real';
+        isConnected = true;
+        reconnectAttempts = 0;
+        reconnectDelay = 1000;
         
         updateAuthStatus(true);
         updateBalanceDisplay(data.authorize.balance);
@@ -168,49 +199,86 @@ function handleDerivMessage(data) {
         // Enable controls after successful auth
         enableControls(true);
         
-        // Subscribe to price ticks
+        // Subscribe to price ticks for R_75
         ws.send(JSON.stringify({
             ticks: 1,
             subscribe: 1,
-            symbol: "R_75"
+            symbol: "R_75",
+            req_id: Date.now()
         }));
         
         // Get balance updates
         ws.send(JSON.stringify({
             balance: 1,
-            subscribe: 1
+            subscribe: 1,
+            req_id: Date.now()
         }));
     }
     
+    // Handle tick data
     if (data.tick) {
         currentPrice = data.tick.quote;
         updatePriceDisplay(currentPrice);
     }
     
+    // Handle proposal response
     if (data.proposal) {
         handleProposalResponse(data.proposal);
     }
     
+    // Handle buy response
     if (data.buy) {
         handleBuyResponse(data.buy);
     }
     
+    // Handle sell response
     if (data.sell) {
         handleSellResponse(data.sell);
     }
     
+    // Handle contract update
     if (data.contract) {
         updateContractValue(data.contract);
     }
     
+    // Handle portfolio update
     if (data.portfolio) {
-        data.portfolio.contracts.forEach(contract => {
-            updateContractValue(contract);
-        });
+        if (data.portfolio.contracts) {
+            data.portfolio.contracts.forEach(contract => {
+                updateContractValue(contract);
+            });
+        }
     }
     
+    // Handle balance update
     if (data.balance) {
         updateBalanceDisplay(data.balance.balance);
+    }
+    
+    // Handle proposal open contract (for profit/loss updates)
+    if (data.proposal_open_contract) {
+        const contract = data.proposal_open_contract;
+        updateContractValue(contract);
+        
+        // Check for contract closure
+        if (contract.is_sold) {
+            const profit = contract.profit || 0;
+            addLogEntry(`Contract ${contract.contract_id} closed. Profit: ${profit >= 0 ? '+' : ''}$${Math.abs(profit).toFixed(2)}`, profit >= 0 ? 'win' : 'loss');
+            
+            sessionStats.totalTrades++;
+            sessionStats.sessionPnL += profit;
+            sessionStats.totalProfit += profit;
+            if (profit > 0) sessionStats.wins++;
+            updateStatsDisplay();
+            
+            // Remove from positions if it's one of our contracts
+            if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
+                currentPositions.higher = null;
+            }
+            if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
+                currentPositions.lower = null;
+            }
+        }
     }
 }
 
@@ -285,6 +353,7 @@ async function placeHedgeTrade() {
     addLogEntry(`  HIGHER barrier: ${higherBarrier}`, 'system');
     addLogEntry(`  LOWER barrier: ${lowerBarrier}`, 'system');
     
+    // Request proposal for CALL (higher)
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -293,20 +362,25 @@ async function placeHedgeTrade() {
         currency: "USD",
         duration: duration,
         duration_unit: "t",
-        symbol: "R_75"
+        symbol: "R_75",
+        req_id: Date.now()
     }));
     
+    // Request proposal for PUT (lower) after a short delay
     setTimeout(() => {
-        ws.send(JSON.stringify({
-            proposal: 1,
-            amount: stake,
-            barrier: lowerBarrier,
-            contract_type: "PUT",
-            currency: "USD",
-            duration: duration,
-            duration_unit: "t",
-            symbol: "R_75"
-        }));
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+                proposal: 1,
+                amount: stake,
+                barrier: lowerBarrier,
+                contract_type: "PUT",
+                currency: "USD",
+                duration: duration,
+                duration_unit: "t",
+                symbol: "R_75",
+                req_id: Date.now() + 1
+            }));
+        }
     }, 500);
 }
 
@@ -314,7 +388,8 @@ function handleProposalResponse(proposal) {
     if (proposal && proposal.id) {
         ws.send(JSON.stringify({
             buy: proposal.id,
-            price: proposal.ask_price
+            price: proposal.ask_price,
+            req_id: Date.now()
         }));
     }
 }
@@ -331,14 +406,18 @@ function handleBuyResponse(buy) {
     
     addLogEntry(`${direction.toUpperCase()} contract purchased: $${buy.buy_price}`, 'system');
     
+    // Subscribe to contract updates
     ws.send(JSON.stringify({
         subscribe: 1,
-        contract_id: buy.contract_id
+        contract_id: buy.contract_id,
+        req_id: Date.now()
     }));
     
+    // Get portfolio
     ws.send(JSON.stringify({
         portfolio: 1,
-        subscribe: 1
+        subscribe: 1,
+        req_id: Date.now()
     }));
     
     if (autoCloseToggle.checked && !autoCloseInterval) {
@@ -347,7 +426,16 @@ function handleBuyResponse(buy) {
 }
 
 function updateContractValue(contract) {
-    const direction = contract.contract_type === 'CALL' ? 'higher' : 'lower';
+    // Determine direction based on contract type and barrier
+    let direction = null;
+    if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
+        direction = 'higher';
+    } else if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
+        direction = 'lower';
+    } else {
+        return; // Not our contract
+    }
+    
     const currentValue = contract.sell_price || contract.current_spot || 0;
     const previousValue = previousValues[direction] || 0;
     const profit = currentValue - (contract.buy_price || 0);
@@ -378,6 +466,9 @@ function showGlow(direction, type) {
     element.classList.remove('gain-glow', 'loss-glow');
     void element.offsetWidth;
     element.classList.add(`${type}-glow`);
+    setTimeout(() => {
+        element.classList.remove(`${type}-glow`);
+    }, 1000);
 }
 
 function updatePositionDisplay(direction, value, profit, change, ticksLeft) {
@@ -396,7 +487,8 @@ function updatePositionDisplay(direction, value, profit, change, ticksLeft) {
         pnlEl.className = `pnl ${profit >= 0 ? 'gain' : 'loss'}`;
     }
     if (changeEl) {
-        changeEl.textContent = `${change >= 0 ? '▲' : '▼'} ${Math.abs(change).toFixed(2)}`;
+        const changeSymbol = change >= 0 ? '▲' : '▼';
+        changeEl.textContent = `${changeSymbol} $${Math.abs(change).toFixed(2)}`;
         changeEl.className = `change ${change >= 0 ? 'positive' : 'negative'}`;
     }
     if (ticksEl) ticksEl.textContent = ticksLeft;
@@ -422,9 +514,11 @@ function updateCombinedValues() {
     }
     
     const target = parseFloat(profitTargetInput.value);
-    const progress = Math.min((netProfit / target) * 100, 100);
-    if (progressFill) progressFill.style.width = `${Math.max(0, progress)}%`;
-    if (progressText) progressText.textContent = `${Math.round(progress)}%`;
+    if (target > 0) {
+        const progress = Math.min((netProfit / target) * 100, 100);
+        if (progressFill) progressFill.style.width = `${Math.max(0, progress)}%`;
+        if (progressText) progressText.textContent = `${Math.round(progress)}%`;
+    }
 }
 
 function checkAutoClose() {
@@ -437,7 +531,7 @@ function checkAutoClose() {
     const netProfit = combinedValue - totalStake;
     const target = parseFloat(profitTargetInput.value);
     
-    if (netProfit >= target) {
+    if (netProfit >= target && target > 0) {
         addLogEntry(`🎯 AUTO-CLOSE TRIGGERED! Net profit $${netProfit.toFixed(2)} reached target $${target.toFixed(2)}`, 'win');
         closeBothContracts();
     }
@@ -451,7 +545,11 @@ async function closeContract(direction, isEmergency = false) {
     }
     
     addLogEntry(`Closing ${direction.toUpperCase()} contract${isEmergency ? ' (EMERGENCY)' : ''}...`, 'system');
-    ws.send(JSON.stringify({ sell: position.id }));
+    ws.send(JSON.stringify({ 
+        sell: position.id,
+        price: 0,
+        req_id: Date.now()
+    }));
 }
 
 async function closeBothContracts() {
@@ -528,7 +626,10 @@ function updateStatsDisplay() {
 
 async function switchAccount(type) {
     addLogEntry(`Switching to ${type.toUpperCase()} account...`, 'system');
-    ws.send(JSON.stringify({ switch_account: type === 'demo' ? 1 : 0 }));
+    ws.send(JSON.stringify({ 
+        switch_account: type === 'demo' ? 1 : 0,
+        req_id: Date.now()
+    }));
     
     if (type === 'demo') {
         demoBtn.classList.add('active');
@@ -540,6 +641,7 @@ async function switchAccount(type) {
         currentAccountType = 'real';
     }
     
+    // Reset stats on account switch
     sessionStats = { totalTrades: 0, wins: 0, totalProfit: 0, sessionPnL: 0 };
     updateStatsDisplay();
 }
