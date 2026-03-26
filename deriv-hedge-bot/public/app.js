@@ -17,11 +17,17 @@ let sessionStats = {
 };
 let autoCloseInterval = null;
 let currentPrice = null;
-let currentAccountType = 'demo'; // 'demo' or 'real'
+let currentAccountType = 'demo';
 let isConnected = false;
 let reconnectAttempts = 0;
 let maxReconnectAttempts = 5;
 let reconnectDelay = 1000;
+let currentSymbol = 'R_75';
+let availableMarkets = [];
+let tickHistory = [];
+let maxTickHistory = 50;
+let lastTenDigits = [];
+let isTickDisplayPaused = false;
 
 // DOM Elements
 const loginBtn = document.getElementById('connect-token-btn');
@@ -42,6 +48,12 @@ const authStatus = document.getElementById('auth-status');
 const apiTokenInput = document.getElementById('api-token');
 const tokenSection = document.getElementById('token-section');
 const accountSwitch = document.getElementById('account-switch');
+const marketSelect = document.getElementById('market-select');
+const tickHistoryDiv = document.getElementById('tick-history');
+const pauseTicksBtn = document.getElementById('pause-ticks-btn');
+const lastTenDigitsSpan = document.getElementById('last-ten-digits');
+const lastDigitDisplay = document.getElementById('last-digit-display');
+const marketSymbolSpan = document.getElementById('market-symbol');
 
 // Event Listeners
 if (loginBtn) loginBtn.addEventListener('click', connectWithToken);
@@ -53,6 +65,8 @@ if (closeLowerBtn) closeLowerBtn.addEventListener('click', () => closeContract('
 if (closeBothBtn) closeBothBtn.addEventListener('click', closeBothContracts);
 if (demoBtn) demoBtn.addEventListener('click', () => switchAccount('demo'));
 if (realBtn) realBtn.addEventListener('click', () => switchAccount('real'));
+if (marketSelect) marketSelect.addEventListener('change', onMarketChange);
+if (pauseTicksBtn) pauseTicksBtn.addEventListener('click', toggleTickDisplay);
 
 // Enter key support for token input
 if (apiTokenInput) {
@@ -70,7 +84,203 @@ window.addEventListener('load', () => {
         apiTokenInput.value = token;
         connectWithToken();
     }
+    loadAvailableMarkets();
 });
+
+// Load available markets from Deriv
+async function loadAvailableMarkets() {
+    addLogEntry('Loading available markets...', 'system');
+    
+    const testWs = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
+    
+    testWs.onopen = () => {
+        testWs.send(JSON.stringify({
+            active_symbols: 'brief',
+            product_type: 'basic',
+            req_id: Date.now()
+        }));
+    };
+    
+    testWs.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        if (data.active_symbols) {
+            // Filter for synthetic indices
+            const syntheticIndices = data.active_symbols.filter(symbol => 
+                symbol.market === 'synthetic' || 
+                symbol.display_name.includes('Volatility') ||
+                symbol.display_name.includes('Jump')
+            );
+            
+            availableMarkets = syntheticIndices;
+            populateMarketDropdown();
+            addLogEntry(`Loaded ${availableMarkets.length} synthetic indices`, 'system');
+            testWs.close();
+        }
+    };
+    
+    testWs.onerror = () => {
+        addLogEntry('Failed to load markets, using default', 'system');
+        // Fallback markets
+        availableMarkets = [
+            { symbol: 'R_75', display_name: 'Volatility 75 Index' },
+            { symbol: 'R_50', display_name: 'Volatility 50 Index' },
+            { symbol: 'R_100', display_name: 'Volatility 100 Index' },
+            { symbol: 'R_25', display_name: 'Volatility 25 Index' },
+            { symbol: 'R_10', display_name: 'Volatility 10 Index' }
+        ];
+        populateMarketDropdown();
+    };
+    
+    setTimeout(() => {
+        if (availableMarkets.length === 0) {
+            testWs.close();
+        }
+    }, 5000);
+}
+
+function populateMarketDropdown() {
+    if (!marketSelect) return;
+    
+    marketSelect.innerHTML = '';
+    availableMarkets.forEach(market => {
+        const option = document.createElement('option');
+        option.value = market.symbol;
+        option.textContent = market.display_name;
+        marketSelect.appendChild(option);
+    });
+    
+    // Set default to R_75 if available
+    const defaultOption = Array.from(marketSelect.options).find(opt => opt.value === 'R_75');
+    if (defaultOption) {
+        marketSelect.value = 'R_75';
+        currentSymbol = 'R_75';
+        if (marketSymbolSpan) marketSymbolSpan.textContent = 'R_75';
+    }
+}
+
+function onMarketChange() {
+    if (!marketSelect) return;
+    
+    currentSymbol = marketSelect.value;
+    if (marketSymbolSpan) marketSymbolSpan.textContent = currentSymbol;
+    
+    addLogEntry(`Switched to market: ${marketSelect.options[marketSelect.selectedIndex].textContent} (${currentSymbol})`, 'system');
+    
+    // Resubscribe to ticks if connected
+    if (ws && ws.readyState === WebSocket.OPEN && isConnected) {
+        subscribeToTicks();
+    }
+}
+
+function subscribeToTicks() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    
+    // Clear existing tick history
+    tickHistory = [];
+    lastTenDigits = [];
+    updateTickDisplay();
+    
+    // Send unsubscribe for previous symbol if any
+    if (currentSymbol) {
+        ws.send(JSON.stringify({
+            forget_all: 'ticks',
+            req_id: Date.now()
+        }));
+    }
+    
+    // Subscribe to new ticks
+    ws.send(JSON.stringify({
+        ticks: currentSymbol,
+        subscribe: 1,
+        req_id: Date.now()
+    }));
+    
+    addLogEntry(`Subscribed to ${currentSymbol} ticks`, 'system');
+}
+
+function handleTick(data) {
+    if (!data.tick || !data.tick.quote) return;
+    
+    currentPrice = data.tick.quote;
+    updatePriceDisplay(currentPrice);
+    
+    // Add to tick history
+    const tickData = {
+        price: currentPrice,
+        time: Date.now(),
+        change: tickHistory.length > 0 ? currentPrice - tickHistory[0].price : 0
+    };
+    
+    tickHistory.unshift(tickData);
+    if (tickHistory.length > maxTickHistory) {
+        tickHistory.pop();
+    }
+    
+    // Update last digit
+    const priceStr = currentPrice.toFixed(2);
+    const lastDigit = priceStr.slice(-1);
+    if (lastDigitDisplay) lastDigitDisplay.textContent = lastDigit;
+    
+    // Update last ten digits
+    if (!isNaN(parseInt(lastDigit))) {
+        lastTenDigits.unshift(lastDigit);
+        if (lastTenDigits.length > 10) {
+            lastTenDigits.pop();
+        }
+        if (lastTenDigitsSpan) {
+            lastTenDigitsSpan.textContent = lastTenDigits.join(' ');
+        }
+    }
+    
+    // Update tick display
+    if (!isTickDisplayPaused) {
+        updateTickDisplay();
+    }
+}
+
+function updateTickDisplay() {
+    if (!tickHistoryDiv) return;
+    
+    if (tickHistory.length === 0) {
+        tickHistoryDiv.innerHTML = '<div class="tick-placeholder">Waiting for ticks...</div>';
+        return;
+    }
+    
+    tickHistoryDiv.innerHTML = '';
+    // Show last 20 ticks
+    const recentTicks = tickHistory.slice(0, 20);
+    
+    recentTicks.forEach((tick, index) => {
+        const tickElement = document.createElement('div');
+        tickElement.className = 'tick-item';
+        const changeClass = tick.change >= 0 ? 'up' : 'down';
+        tickElement.classList.add(changeClass);
+        tickElement.innerHTML = `
+            <span class="tick-price">$${tick.price.toFixed(2)}</span>
+            <span class="tick-change">${tick.change >= 0 ? '▲' : '▼'}${Math.abs(tick.change).toFixed(2)}</span>
+        `;
+        tickHistoryDiv.appendChild(tickElement);
+    });
+    
+    // Auto-scroll to show newest ticks
+    tickHistoryDiv.scrollTop = 0;
+}
+
+function toggleTickDisplay() {
+    isTickDisplayPaused = !isTickDisplayPaused;
+    if (pauseTicksBtn) {
+        if (isTickDisplayPaused) {
+            pauseTicksBtn.textContent = 'Resume';
+            pauseTicksBtn.style.background = '#ff4444';
+            addLogEntry('Tick display paused', 'system');
+        } else {
+            pauseTicksBtn.textContent = 'Pause';
+            pauseTicksBtn.style.background = '';
+            updateTickDisplay();
+            addLogEntry('Tick display resumed', 'system');
+        }
+    }
+}
 
 // Connect using API token
 async function connectWithToken() {
@@ -83,10 +293,7 @@ async function connectWithToken() {
     
     addLogEntry('Connecting with API token...', 'system');
     
-    // Store token
     localStorage.setItem('deriv_token', token);
-    
-    // Connect WebSocket
     connectWebSocket(token);
 }
 
@@ -101,12 +308,10 @@ function connectWebSocket(token) {
         ws.close();
     }
     
-    // Use the same endpoint as 10X AI which is working
     ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
     
     ws.onopen = () => {
         addLogEntry('WebSocket connected, authorizing...', 'system');
-        // Send authorize request
         ws.send(JSON.stringify({ 
             authorize: token,
             req_id: Date.now()
@@ -133,18 +338,15 @@ function connectWebSocket(token) {
         enableControls(false);
         isConnected = false;
         
-        // Clear positions on disconnect
         currentPositions = { higher: null, lower: null };
         previousValues = { higher: 0, lower: 0 };
         
-        // Reset displays
         const resetEls = ['higher-value', 'lower-value', 'higher-pnl', 'lower-pnl', 'combined-value', 'net-profit'];
         resetEls.forEach(id => {
             const el = document.getElementById(id);
             if (el) el.textContent = '$0.00';
         });
         
-        // Attempt reconnect if bot was running
         if (isBotRunning && reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
             addLogEntry(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`, 'system');
@@ -159,11 +361,9 @@ function connectWebSocket(token) {
 
 // Handle messages from Deriv
 function handleDerivMessage(data) {
-    // Handle error responses
     if (data.error) {
         addLogEntry(`API Error: ${data.error.message}`, 'system');
         
-        // Handle invalid token
         if (data.error.code === 'InvalidToken' || data.error.message.includes('Invalid token')) {
             addLogEntry('Invalid API token. Please check your token and try again.', 'system');
             updateAuthStatus(false);
@@ -174,9 +374,7 @@ function handleDerivMessage(data) {
         return;
     }
     
-    // Handle authorization response
     if (data.authorize) {
-        // Determine account type from loginid
         const loginid = data.authorize.loginid;
         currentAccountType = loginid && loginid.startsWith('VRTC') ? 'demo' : 'real';
         isConnected = true;
@@ -187,7 +385,6 @@ function handleDerivMessage(data) {
         updateBalanceDisplay(data.authorize.balance);
         addLogEntry(`Authorized as ${data.authorize.email || data.authorize.loginid} (${currentAccountType.toUpperCase()} account)`, 'system');
         
-        // Update account switch buttons
         if (currentAccountType === 'demo') {
             demoBtn.classList.add('active');
             realBtn.classList.remove('active');
@@ -196,16 +393,10 @@ function handleDerivMessage(data) {
             demoBtn.classList.remove('active');
         }
         
-        // Enable controls after successful auth
         enableControls(true);
         
-        // Subscribe to price ticks for R_75
-        ws.send(JSON.stringify({
-            ticks: 1,
-            subscribe: 1,
-            symbol: "R_75",
-            req_id: Date.now()
-        }));
+        // Subscribe to ticks for current market
+        subscribeToTicks();
         
         // Get balance updates
         ws.send(JSON.stringify({
@@ -215,52 +406,40 @@ function handleDerivMessage(data) {
         }));
     }
     
-    // Handle tick data
     if (data.tick) {
-        currentPrice = data.tick.quote;
-        updatePriceDisplay(currentPrice);
+        handleTick(data);
     }
     
-    // Handle proposal response
     if (data.proposal) {
         handleProposalResponse(data.proposal);
     }
     
-    // Handle buy response
     if (data.buy) {
         handleBuyResponse(data.buy);
     }
     
-    // Handle sell response
     if (data.sell) {
         handleSellResponse(data.sell);
     }
     
-    // Handle contract update
     if (data.contract) {
         updateContractValue(data.contract);
     }
     
-    // Handle portfolio update
-    if (data.portfolio) {
-        if (data.portfolio.contracts) {
-            data.portfolio.contracts.forEach(contract => {
-                updateContractValue(contract);
-            });
-        }
+    if (data.portfolio && data.portfolio.contracts) {
+        data.portfolio.contracts.forEach(contract => {
+            updateContractValue(contract);
+        });
     }
     
-    // Handle balance update
     if (data.balance) {
         updateBalanceDisplay(data.balance.balance);
     }
     
-    // Handle proposal open contract (for profit/loss updates)
     if (data.proposal_open_contract) {
         const contract = data.proposal_open_contract;
         updateContractValue(contract);
         
-        // Check for contract closure
         if (contract.is_sold) {
             const profit = contract.profit || 0;
             addLogEntry(`Contract ${contract.contract_id} closed. Profit: ${profit >= 0 ? '+' : ''}$${Math.abs(profit).toFixed(2)}`, profit >= 0 ? 'win' : 'loss');
@@ -271,7 +450,6 @@ function handleDerivMessage(data) {
             if (profit > 0) sessionStats.wins++;
             updateStatsDisplay();
             
-            // Remove from positions if it's one of our contracts
             if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
                 currentPositions.higher = null;
             }
@@ -306,7 +484,7 @@ async function startBot() {
     isBotRunning = true;
     startBtn.disabled = true;
     stopBtn.disabled = false;
-    addLogEntry('Bot started. Monitoring for trades...', 'system');
+    addLogEntry(`Bot started on ${marketSelect.options[marketSelect.selectedIndex]?.textContent || currentSymbol}`, 'system');
     await placeHedgeTrade();
 }
 
@@ -349,11 +527,10 @@ async function placeHedgeTrade() {
     const higherBarrier = (currentPrice + offset).toFixed(2);
     const lowerBarrier = (currentPrice - offset).toFixed(2);
     
-    addLogEntry(`Placing trades at price ${currentPrice.toFixed(2)}`, 'system');
+    addLogEntry(`Placing trades on ${currentSymbol} at price ${currentPrice.toFixed(2)}`, 'system');
     addLogEntry(`  HIGHER barrier: ${higherBarrier}`, 'system');
     addLogEntry(`  LOWER barrier: ${lowerBarrier}`, 'system');
     
-    // Request proposal for CALL (higher)
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -362,11 +539,10 @@ async function placeHedgeTrade() {
         currency: "USD",
         duration: duration,
         duration_unit: "t",
-        symbol: "R_75",
+        symbol: currentSymbol,
         req_id: Date.now()
     }));
     
-    // Request proposal for PUT (lower) after a short delay
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
@@ -377,7 +553,7 @@ async function placeHedgeTrade() {
                 currency: "USD",
                 duration: duration,
                 duration_unit: "t",
-                symbol: "R_75",
+                symbol: currentSymbol,
                 req_id: Date.now() + 1
             }));
         }
@@ -406,14 +582,12 @@ function handleBuyResponse(buy) {
     
     addLogEntry(`${direction.toUpperCase()} contract purchased: $${buy.buy_price}`, 'system');
     
-    // Subscribe to contract updates
     ws.send(JSON.stringify({
         subscribe: 1,
         contract_id: buy.contract_id,
         req_id: Date.now()
     }));
     
-    // Get portfolio
     ws.send(JSON.stringify({
         portfolio: 1,
         subscribe: 1,
@@ -426,14 +600,13 @@ function handleBuyResponse(buy) {
 }
 
 function updateContractValue(contract) {
-    // Determine direction based on contract type and barrier
     let direction = null;
     if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
         direction = 'higher';
     } else if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
         direction = 'lower';
     } else {
-        return; // Not our contract
+        return;
     }
     
     const currentValue = contract.sell_price || contract.current_spot || 0;
@@ -641,7 +814,6 @@ async function switchAccount(type) {
         currentAccountType = 'real';
     }
     
-    // Reset stats on account switch
     sessionStats = { totalTrades: 0, wins: 0, totalProfit: 0, sessionPnL: 0 };
     updateStatsDisplay();
 }
@@ -664,7 +836,7 @@ function updateAuthStatus(connected) {
 }
 
 function enableControls(enabled) {
-    const inputs = [stakeInput, durationInput, offsetInput, profitTargetInput, autoCloseToggle];
+    const inputs = [stakeInput, durationInput, offsetInput, profitTargetInput, autoCloseToggle, marketSelect];
     inputs.forEach(input => { if (input) input.disabled = !enabled; });
     if (startBtn) startBtn.disabled = !enabled;
     if (emergencyBtn) emergencyBtn.disabled = !enabled;
