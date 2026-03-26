@@ -1,0 +1,16 @@
+{
+  "name": "deriv-hedge-bot",
+  "version": "1.0.0",
+  "description": "Deriv Hedge Bot with Mid-Trade Exit",
+  "main": "api/auth.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "node-fetch": "^2.7.0"
+  },
+  "devDependencies": {
+    "vercel": "^32.0.0"
+  }
+}
