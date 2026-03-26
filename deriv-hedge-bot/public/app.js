@@ -97,7 +97,7 @@ function connectWebSocket(token) {
         ws.close();
     }
     
-    ws = new WebSocket('wss://ws.deriv.com/websockets/v3');
+    ws = new WebSocket('wss://ws.deriv.com/websockets/v3?app_id=1089');
     
     ws.onopen = () => {
         ws.send(JSON.stringify({ authorize: token }));
