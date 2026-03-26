@@ -20,8 +20,11 @@ let currentPrice = null;
 
 // Deriv OAuth Configuration - YOUR APP ID IS ALREADY INSERTED
 const DERIV_APP_ID = '32OON3K9cYrXZrNK02Xvh';
-const REDIRECT_URI = `${window.location.origin}/api/auth/callback`;
-const DERIV_AUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=${DERIV_APP_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=read%20write%20trade`;
+const DERIV_AUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=${DERIV_APP_ID}&brand=deriv&redirect=home`;
+
+loginBtn.addEventListener('click', () => {
+    window.location.href = DERIV_AUTH_URL;
+});
 
 // DOM Elements
 const loginBtn = document.getElementById('login-btn');
