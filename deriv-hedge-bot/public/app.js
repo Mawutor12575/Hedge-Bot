@@ -529,11 +529,11 @@ async function placeHedgeTrade() {
     addLogEntry(`  HIGHER barrier: ${higherBarrier}`, 'system');
     addLogEntry(`  LOWER barrier: ${lowerBarrier}`, 'system');
     
-    // Proposal for CALL (higher) - FIXED: Added basis parameter
+    // Proposal for CALL (higher) - Using amount parameter (matching 10X AI)
     ws.send(JSON.stringify({
         proposal: 1,
-        stake: stake,  // Changed from 'amount' to 'stake'
-        basis: 'stake',  // Added basis parameter
+        amount: stake,
+        basis: 'stake',
         barrier: higherBarrier,
         contract_type: "CALL",
         currency: "USD",
@@ -543,13 +543,13 @@ async function placeHedgeTrade() {
         req_id: Date.now()
     }));
     
-    // Proposal for PUT (lower) - FIXED: Added basis parameter
+    // Proposal for PUT (lower) - Using amount parameter (matching 10X AI)
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 proposal: 1,
-                stake: stake,  // Changed from 'amount' to 'stake'
-                basis: 'stake',  // Added basis parameter
+                amount: stake,
+                basis: 'stake',
                 barrier: lowerBarrier,
                 contract_type: "PUT",
                 currency: "USD",
