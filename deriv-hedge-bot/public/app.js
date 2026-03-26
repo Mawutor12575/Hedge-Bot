@@ -19,7 +19,7 @@ let sessionStats = {
 let autoCloseInterval = null;
 
 // Deriv OAuth Configuration
-const DERIV_APP_ID = 'YOUR_APP_ID'; // Replace with your Deriv App ID
+const DERIV_APP_ID = '32OON3K9cYrXZrNK02Xvh'; // Replace with your Deriv App ID
 const REDIRECT_URI = `${window.location.origin}/api/auth/callback`;
 const DERIV_AUTH_URL = `https://oauth.deriv.com/oauth2/authorize?app_id=${DERIV_APP_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&scope=read write trade`;
 
