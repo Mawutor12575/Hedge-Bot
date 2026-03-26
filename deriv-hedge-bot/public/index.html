@@ -17,7 +17,7 @@
             </div>
             <div class="account-section">
                 <div class="price-display">
-                    <span>R_75</span>
+                    <span id="market-symbol">R_75</span>
                     <span id="current-price">$0.00</span>
                 </div>
                 <div class="balance-display">
@@ -40,6 +40,38 @@
         </header>
 
         <div class="main-content">
+            <!-- Market Selection Card -->
+            <div class="card market-card">
+                <h2>Market Selection</h2>
+                <div class="control-group">
+                    <div class="input-group" style="flex: 2;">
+                        <label>Trading Instrument</label>
+                        <select id="market-select" class="market-select">
+                            <option value="">Loading markets...</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Last Digit</label>
+                        <div id="last-digit-display" class="last-digit">-</div>
+                    </div>
+                </div>
+                
+                <!-- Tick Display -->
+                <div class="tick-display-section">
+                    <div class="tick-header">
+                        <h3>Live Ticks</h3>
+                        <button id="pause-ticks-btn" class="btn-small">Pause</button>
+                    </div>
+                    <div id="tick-history" class="tick-history">
+                        <div class="tick-placeholder">Waiting for ticks...</div>
+                    </div>
+                    <div class="tick-stats">
+                        <span>Last 10 digits: </span>
+                        <span id="last-ten-digits" class="digit-sequence">-</span>
+                    </div>
+                </div>
+            </div>
+
             <div class="card control-panel">
                 <h2>Control Panel</h2>
                 <div class="control-group">
@@ -84,7 +116,7 @@
                     <div id="higher-position" class="position-item">
                         <div class="position-header">
                             <span class="position-icon">📈</span>
-                            <span class="position-title">HIGHER</span>
+                            <span class="position-title">HIGHER (CALL)</span>
                         </div>
                         <div class="position-details">
                             <div class="detail-row">
@@ -111,7 +143,7 @@
                     <div id="lower-position" class="position-item">
                         <div class="position-header">
                             <span class="position-icon">📉</span>
-                            <span class="position-title">LOWER</span>
+                            <span class="position-title">LOWER (PUT)</span>
                         </div>
                         <div class="position-details">
                             <div class="detail-row">
