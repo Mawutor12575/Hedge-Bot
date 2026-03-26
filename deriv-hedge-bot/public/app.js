@@ -181,12 +181,10 @@ function subscribeToTicks() {
     updateTickDisplay();
     
     // Send unsubscribe for previous symbol if any
-    if (currentSymbol) {
-        ws.send(JSON.stringify({
-            forget_all: 'ticks',
-            req_id: Date.now()
-        }));
-    }
+    ws.send(JSON.stringify({
+        forget_all: 'ticks',
+        req_id: Date.now()
+    }));
     
     // Subscribe to new ticks
     ws.send(JSON.stringify({
@@ -531,9 +529,11 @@ async function placeHedgeTrade() {
     addLogEntry(`  HIGHER barrier: ${higherBarrier}`, 'system');
     addLogEntry(`  LOWER barrier: ${lowerBarrier}`, 'system');
     
+    // Proposal for CALL (higher) - FIXED: Added basis parameter
     ws.send(JSON.stringify({
         proposal: 1,
-        amount: stake,
+        stake: stake,  // Changed from 'amount' to 'stake'
+        basis: 'stake',  // Added basis parameter
         barrier: higherBarrier,
         contract_type: "CALL",
         currency: "USD",
@@ -543,11 +543,13 @@ async function placeHedgeTrade() {
         req_id: Date.now()
     }));
     
+    // Proposal for PUT (lower) - FIXED: Added basis parameter
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
                 proposal: 1,
-                amount: stake,
+                stake: stake,  // Changed from 'amount' to 'stake'
+                basis: 'stake',  // Added basis parameter
                 barrier: lowerBarrier,
                 contract_type: "PUT",
                 currency: "USD",
@@ -562,6 +564,7 @@ async function placeHedgeTrade() {
 
 function handleProposalResponse(proposal) {
     if (proposal && proposal.id) {
+        addLogEntry(`Proposal received: ${proposal.longcode || proposal.contract_type} - Price: $${proposal.ask_price}`, 'system');
         ws.send(JSON.stringify({
             buy: proposal.id,
             price: proposal.ask_price,
@@ -580,14 +583,16 @@ function handleBuyResponse(buy) {
         buyTimestamp: Date.now()
     };
     
-    addLogEntry(`${direction.toUpperCase()} contract purchased: $${buy.buy_price}`, 'system');
+    addLogEntry(`${direction.toUpperCase()} contract purchased: $${buy.buy_price} (ID: ${buy.contract_id})`, 'system');
     
+    // Subscribe to contract updates
     ws.send(JSON.stringify({
         subscribe: 1,
         contract_id: buy.contract_id,
         req_id: Date.now()
     }));
     
+    // Get portfolio
     ws.send(JSON.stringify({
         portfolio: 1,
         subscribe: 1,
