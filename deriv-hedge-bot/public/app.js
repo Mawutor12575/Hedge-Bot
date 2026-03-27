@@ -408,6 +408,12 @@ function handleDerivMessage(data) {
             subscribe: 1,
             req_id: Date.now()
         }));
+
+        ws.send(JSON.stringify({
+        portfolio: 1,
+        subscribe: 1,
+        req_id: Date.now()
+        }));
     }
     
     if (data.tick) {
@@ -552,8 +558,8 @@ async function placeHedgeTrade() {
     
     // For Higher/Lower contracts, barriers should be relative (with + or - sign)
     // Format: "+0.5" for higher, "-0.5" for lower
-    const higherBarrier = `+${offset.toFixed(2)}`;
-    const lowerBarrier = `-${offset.toFixed(2)}`;
+    const higherBarrier = `+${offset.toFixed(4)}`;
+    const lowerBarrier = `-${offset.toFixed(4)}`;
     
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     addLogEntry(`🎯 Placing Parallel Hedge Trade at ${currentPrice.toFixed(2)}`, 'system');
@@ -604,10 +610,10 @@ function handleProposalResponse(proposal) {
         const profitPotential = payout - stake;
         const profitPercent = (profitPotential / stake) * 100;
         
-        addLogEntry(`📝 Proposal for ${proposal.contract_type}: Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
+        addLogEntry(`📝 Proposal accepted - Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
         
         // Check min payout condition (like DBot's min_payout check)
-        const minPayout = parseFloat(profitTargetInput.value) * 0.46; // Approximate min payout threshold
+        const minPayout = TRADING_CONFIG.minPayout; // Approximate min payout threshold
         if (profitPotential >= minPayout) {
             addLogEntry(`✅ Proposal accepted - purchasing contract...`, 'success');
             ws.send(JSON.stringify({
@@ -641,16 +647,13 @@ function handleBuyResponse(buy) {
     
     // Subscribe to contract updates
     ws.send(JSON.stringify({
-        subscribe: 1,
+        proposal_open_contract: 1,        // ← This was missing
         contract_id: buy.contract_id,
+        subscribe: 1,
         req_id: Date.now()
     }));
     
-    ws.send(JSON.stringify({
-        portfolio: 1,
-        subscribe: 1,
-        req_id: Date.now()
-    }));
+
     
     activeProposalCount--;
     
