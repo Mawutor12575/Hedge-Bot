@@ -372,6 +372,12 @@ function handleDerivMessage(data) {
             localStorage.removeItem('deriv_token');
             if (ws) ws.close();
         }
+        
+        // Release lock on error
+        if (data.error.message.includes('barrier')) {
+            tradingLock = false;
+            activeProposalCount = 0;
+        }
         return;
     }
     
@@ -440,7 +446,7 @@ function handleDerivMessage(data) {
         
         if (contract.is_sold) {
             const profit = contract.profit || 0;
-            addLogEntry(`Contract ${contract.contract_id} closed. ${profit >= 0 ? 'Win' : 'Loss'}: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}`, profit >= 0 ? 'win' : 'loss');
+            addLogEntry(`📊 Contract ${contract.contract_id} closed. ${profit >= 0 ? '✅ WIN' : '❌ LOSS'}: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}`, profit >= 0 ? 'win' : 'loss');
             
             sessionStats.totalTrades++;
             sessionStats.sessionPnL += profit;
@@ -488,9 +494,12 @@ async function startBot() {
     isBotRunning = true;
     startBtn.disabled = true;
     stopBtn.disabled = false;
+    addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     addLogEntry(`🤖 Hedge Bot started on ${marketSelect.options[marketSelect.selectedIndex]?.textContent || currentSymbol}`, 'system');
     addLogEntry(`📊 Strategy: Parallel HIGHER/LOWER trades with ${durationInput.value} ticks duration`, 'system');
-    addLogEntry(`💰 Stake: $${stakeInput.value} | Expected net profit on win: $${(parseFloat(stakeInput.value) * 4.13).toFixed(2)}`, 'system');
+    addLogEntry(`💰 Stake: $${stakeInput.value} each | Offset: ${offsetInput.value} points`, 'system');
+    addLogEntry(`🎯 Profit Target: $${profitTargetInput.value} | Auto-close: ${autoCloseToggle.checked ? 'ON' : 'OFF'}`, 'system');
+    addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     
     await placeHedgeTrade();
 }
@@ -500,7 +509,8 @@ function stopBot() {
     startBtn.disabled = false;
     stopBtn.disabled = true;
     tradingLock = false;
-    addLogEntry('Bot stopped', 'system');
+    activeProposalCount = 0;
+    addLogEntry('🛑 Bot stopped', 'system');
     
     if (autoCloseInterval) {
         clearInterval(autoCloseInterval);
@@ -509,7 +519,8 @@ function stopBot() {
 }
 
 async function emergencyStop() {
-    addLogEntry('⚠️ EMERGENCY STOP ACTIVATED - Closing all positions', 'system');
+    addLogEntry('⚠️⚠️⚠️ EMERGENCY STOP ACTIVATED ⚠️⚠️⚠️', 'system');
+    addLogEntry('🔒 Closing all positions immediately...', 'system');
     
     if (currentPositions.higher && currentPositions.higher.id) {
         await closeContract('higher', true);
@@ -539,19 +550,21 @@ async function placeHedgeTrade() {
     const duration = parseInt(durationInput.value);
     const offset = parseFloat(offsetInput.value);
     
-    // Calculate barriers using the DBot formula
-    const higherBarrier = (currentPrice + offset).toFixed(2);
-    const lowerBarrier = (currentPrice - offset).toFixed(2);
+    // For Higher/Lower contracts, barriers should be relative (with + or - sign)
+    // Format: "+0.5" for higher, "-0.5" for lower
+    const higherBarrier = `+${offset.toFixed(2)}`;
+    const lowerBarrier = `-${offset.toFixed(2)}`;
     
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     addLogEntry(`🎯 Placing Parallel Hedge Trade at ${currentPrice.toFixed(2)}`, 'system');
-    addLogEntry(`📈 HIGHER: ${higherBarrier} (CALL)`, 'system');
-    addLogEntry(`📉 LOWER: ${lowerBarrier} (PUT)`, 'system');
+    addLogEntry(`📈 HIGHER: ${higherBarrier} (CALL) - Price must rise by ${offset} points`, 'system');
+    addLogEntry(`📉 LOWER: ${lowerBarrier} (PUT) - Price must fall by ${offset} points`, 'system');
     addLogEntry(`⏱️ Duration: ${duration} ticks | 💰 Stake: $${stake} each`, 'system');
+    addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     
     activeProposalCount = 2;
     
-    // Request proposal for HIGHER (CALL)
+    // Proposal for CALL (higher) - Using relative barrier
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -565,7 +578,7 @@ async function placeHedgeTrade() {
         req_id: Date.now()
     }));
     
-    // Request proposal for LOWER (PUT)
+    // Proposal for PUT (lower) - Using relative barrier
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
@@ -589,19 +602,21 @@ function handleProposalResponse(proposal) {
         const payout = parseFloat(proposal.payout);
         const stake = parseFloat(stakeInput.value);
         const profitPotential = payout - stake;
+        const profitPercent = (profitPotential / stake) * 100;
         
-        addLogEntry(`📝 Proposal received: ${proposal.contract_type} | Payout: $${payout.toFixed(2)} | Potential Profit: $${profitPotential.toFixed(2)}`, 'system');
+        addLogEntry(`📝 Proposal for ${proposal.contract_type}: Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
         
         // Check min payout condition (like DBot's min_payout check)
         const minPayout = parseFloat(profitTargetInput.value) * 0.46; // Approximate min payout threshold
         if (profitPotential >= minPayout) {
+            addLogEntry(`✅ Proposal accepted - purchasing contract...`, 'success');
             ws.send(JSON.stringify({
                 buy: proposal.id,
                 price: proposal.ask_price,
                 req_id: Date.now()
             }));
         } else {
-            addLogEntry(`⚠️ Proposal rejected: Payout below minimum threshold`, 'system');
+            addLogEntry(`⚠️ Proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
             activeProposalCount--;
             if (activeProposalCount === 0) {
                 tradingLock = false;
@@ -660,17 +675,18 @@ function updateContractValue(contract) {
     const previousValue = previousValues[direction] || 0;
     const profit = currentValue - (contract.buy_price || 0);
     const profitPercent = (profit / (contract.buy_price || 1)) * 100;
+    const ticksLeft = Math.max(0, contract.date_expiry - Math.floor(Date.now() / 1000));
     
     if (currentPositions[direction]) {
         currentPositions[direction].currentValue = currentValue;
-        currentPositions[direction].ticksLeft = Math.max(0, contract.date_expiry - Math.floor(Date.now() / 1000));
+        currentPositions[direction].ticksLeft = ticksLeft;
         currentPositions[direction].profit = profit;
         currentPositions[direction].profitPercent = profitPercent;
     }
     
     const change = currentValue - previousValue;
     
-    updatePositionDisplay(direction, currentValue, profit, profitPercent, change, currentPositions[direction]?.ticksLeft || 0);
+    updatePositionDisplay(direction, currentValue, profit, profitPercent, change, ticksLeft);
     
     if (change > 0) {
         showGlow(direction, 'gain');
@@ -756,7 +772,7 @@ function checkAutoClose() {
     
     // Auto-close when profit target is reached
     if (netProfit >= target && target > 0) {
-        addLogEntry(`🎯 TARGET REACHED! Net profit $${netProfit.toFixed(2)} >= $${target.toFixed(2)}`, 'win');
+        addLogEntry(`🎯🎯🎯 TARGET REACHED! Net profit $${netProfit.toFixed(2)} >= $${target.toFixed(2)}`, 'win');
         addLogEntry(`🔄 Closing both contracts to secure profit...`, 'win');
         closeBothContracts();
         return;
@@ -765,13 +781,15 @@ function checkAutoClose() {
     // Optional: Auto-close when one contract hits a good profit and the other is losing
     const higherProfit = currentPositions.higher?.profit || 0;
     const lowerProfit = currentPositions.lower?.profit || 0;
+    const higherPercent = currentPositions.higher?.profitPercent || 0;
+    const lowerPercent = currentPositions.lower?.profitPercent || 0;
     
     if (higherProfit > 1.0 && lowerProfit < -0.5) {
-        addLogEntry(`🎯 Profitable opportunity detected! Higher: +$${higherProfit.toFixed(2)} | Lower: $${lowerProfit.toFixed(2)}`, 'win');
+        addLogEntry(`🎯 Profitable opportunity detected! Higher: +$${higherProfit.toFixed(2)} (${higherPercent.toFixed(1)}%) | Lower: $${lowerProfit.toFixed(2)} (${lowerPercent.toFixed(1)}%)`, 'win');
         addLogEntry(`🔄 Closing to lock in profit...`, 'win');
         closeBothContracts();
     } else if (lowerProfit > 1.0 && higherProfit < -0.5) {
-        addLogEntry(`🎯 Profitable opportunity detected! Lower: +$${lowerProfit.toFixed(2)} | Higher: $${higherProfit.toFixed(2)}`, 'win');
+        addLogEntry(`🎯 Profitable opportunity detected! Lower: +$${lowerProfit.toFixed(2)} (${lowerPercent.toFixed(1)}%) | Higher: $${higherProfit.toFixed(2)} (${higherPercent.toFixed(1)}%)`, 'win');
         addLogEntry(`🔄 Closing to lock in profit...`, 'win');
         closeBothContracts();
     }
@@ -783,7 +801,8 @@ async function closeContract(direction, isEmergency = false) {
         return;
     }
     
-    addLogEntry(`🔒 Closing ${direction.toUpperCase()} contract (ID: ${position.id})${isEmergency ? ' - EMERGENCY' : ''}...`, 'system');
+    const profit = position.profit || 0;
+    addLogEntry(`🔒 Closing ${direction.toUpperCase()} contract (ID: ${position.id}) | Current P/L: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}${isEmergency ? ' - EMERGENCY' : ''}`, 'system');
     ws.send(JSON.stringify({ 
         sell: position.id,
         price: 0,
@@ -826,7 +845,7 @@ async function closeBothContracts() {
         tradingLock = false;
         
         if (isBotRunning) {
-            addLogEntry(`🔄 Preparing next hedge trade cycle...`, 'system');
+            addLogEntry(`🔄 Preparing next hedge trade cycle in 3 seconds...`, 'system');
             setTimeout(() => placeHedgeTrade(), 3000);
         }
     }, 1000);
