@@ -30,14 +30,18 @@ let lastTenDigits = [];
 let isTickDisplayPaused = false;
 let tradingLock = false;
 let activeProposalCount = 0;
-let contractSubscriptionIds = []; // Track active contract subscriptions
+let contractSubscriptionIds = [];
+let pendingProposals = {
+    higher: null,
+    lower: null
+};
 
-// Trading Parameters (from DBot)
+// Trading Parameters
 const TRADING_CONFIG = {
-    barrierOffset: 14.9962,  // The magical offset from DBot
-    minPayout: 2.3,          // Minimum payout multiplier filter
-    defaultDuration: 5,      // Default duration in ticks
-    defaultStake: 1.0        // Default stake amount
+    barrierOffset: 14.9962,
+    minPayout: 2.3,
+    defaultDuration: 5,
+    defaultStake: 1.0
 };
 
 // DOM Elements
@@ -66,7 +70,7 @@ const lastTenDigitsSpan = document.getElementById('last-ten-digits');
 const lastDigitDisplay = document.getElementById('last-digit-display');
 const marketSymbolSpan = document.getElementById('market-symbol');
 
-// Set default values from DBot config
+// Set default values
 if (stakeInput) stakeInput.value = TRADING_CONFIG.defaultStake;
 if (durationInput) durationInput.value = TRADING_CONFIG.defaultDuration;
 if (offsetInput) offsetInput.value = TRADING_CONFIG.barrierOffset;
@@ -85,16 +89,12 @@ if (realBtn) realBtn.addEventListener('click', () => switchAccount('real'));
 if (marketSelect) marketSelect.addEventListener('change', onMarketChange);
 if (pauseTicksBtn) pauseTicksBtn.addEventListener('click', toggleTickDisplay);
 
-// Enter key support for token input
 if (apiTokenInput) {
     apiTokenInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            connectWithToken();
-        }
+        if (e.key === 'Enter') connectWithToken();
     });
 }
 
-// Check for existing token on load
 window.addEventListener('load', () => {
     const token = localStorage.getItem('deriv_token');
     if (token) {
@@ -104,7 +104,6 @@ window.addEventListener('load', () => {
     loadAvailableMarkets();
 });
 
-// Load available markets from Deriv
 async function loadAvailableMarkets() {
     addLogEntry('Loading available markets...', 'system');
     
@@ -147,9 +146,7 @@ async function loadAvailableMarkets() {
     };
     
     setTimeout(() => {
-        if (availableMarkets.length === 0) {
-            testWs.close();
-        }
+        if (availableMarkets.length === 0) testWs.close();
     }, 5000);
 }
 
@@ -192,13 +189,11 @@ function subscribeToTicks() {
     lastTenDigits = [];
     updateTickDisplay();
     
-    // Unsubscribe from previous ticks
     ws.send(JSON.stringify({
         forget_all: 'ticks',
         req_id: Date.now()
     }));
     
-    // Subscribe to new ticks
     ws.send(JSON.stringify({
         ticks: currentSymbol,
         subscribe: 1,
@@ -221,9 +216,7 @@ function handleTick(data) {
     };
     
     tickHistory.unshift(tickData);
-    if (tickHistory.length > maxTickHistory) {
-        tickHistory.pop();
-    }
+    if (tickHistory.length > maxTickHistory) tickHistory.pop();
     
     const priceStr = currentPrice.toFixed(2);
     const lastDigit = priceStr.slice(-1);
@@ -231,16 +224,45 @@ function handleTick(data) {
     
     if (!isNaN(parseInt(lastDigit))) {
         lastTenDigits.unshift(lastDigit);
-        if (lastTenDigits.length > 10) {
-            lastTenDigits.pop();
-        }
-        if (lastTenDigitsSpan) {
-            lastTenDigitsSpan.textContent = lastTenDigits.join(' ');
+        if (lastTenDigits.length > 10) lastTenDigits.pop();
+        if (lastTenDigitsSpan) lastTenDigitsSpan.textContent = lastTenDigits.join(' ');
+    }
+    
+    if (!isTickDisplayPaused) updateTickDisplay();
+    
+    // Update tick indicators for both positions
+    updateTickIndicators();
+}
+
+function updateTickIndicators() {
+    // Update tick indicators for higher position
+    if (currentPositions.higher && currentPositions.higher.ticksLeft !== undefined) {
+        const higherIndicator = document.getElementById('higher-tick-indicator');
+        if (higherIndicator) {
+            const profit = currentPositions.higher.profit || 0;
+            if (profit > 0) {
+                higherIndicator.classList.add('profit-tick');
+                setTimeout(() => higherIndicator.classList.remove('profit-tick'), 300);
+            } else if (profit < 0) {
+                higherIndicator.classList.add('loss-tick');
+                setTimeout(() => higherIndicator.classList.remove('loss-tick'), 300);
+            }
         }
     }
     
-    if (!isTickDisplayPaused) {
-        updateTickDisplay();
+    // Update tick indicators for lower position
+    if (currentPositions.lower && currentPositions.lower.ticksLeft !== undefined) {
+        const lowerIndicator = document.getElementById('lower-tick-indicator');
+        if (lowerIndicator) {
+            const profit = currentPositions.lower.profit || 0;
+            if (profit > 0) {
+                lowerIndicator.classList.add('profit-tick');
+                setTimeout(() => lowerIndicator.classList.remove('profit-tick'), 300);
+            } else if (profit < 0) {
+                lowerIndicator.classList.add('loss-tick');
+                setTimeout(() => lowerIndicator.classList.remove('loss-tick'), 300);
+            }
+        }
     }
 }
 
@@ -286,31 +308,24 @@ function toggleTickDisplay() {
     }
 }
 
-// Connect using API token
 async function connectWithToken() {
     const token = apiTokenInput.value.trim();
-    
     if (!token) {
         addLogEntry('Please enter your API token', 'system');
         return;
     }
-    
     addLogEntry('Connecting with API token...', 'system');
-    
     localStorage.setItem('deriv_token', token);
     connectWebSocket(token);
 }
 
-// Connect WebSocket to Deriv
 function connectWebSocket(token) {
     if (!token) {
         addLogEntry('No token found. Please enter your API token.', 'system');
         return;
     }
     
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-    }
+    if (ws && ws.readyState === WebSocket.OPEN) ws.close();
     
     ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
     
@@ -363,7 +378,6 @@ function connectWebSocket(token) {
     };
 }
 
-// Handle messages from Deriv
 function handleDerivMessage(data) {
     if (data.error) {
         addLogEntry(`API Error: ${data.error.message}`, 'system');
@@ -376,7 +390,6 @@ function handleDerivMessage(data) {
             if (ws) ws.close();
         }
         
-        // Release lock on error
         if (data.error.message.includes('barrier')) {
             tradingLock = false;
             activeProposalCount = 0;
@@ -406,30 +419,17 @@ function handleDerivMessage(data) {
         enableControls(true);
         subscribeToTicks();
         
-        // Subscribe to balance updates (without subscribe parameter - just get balance)
-        ws.send(JSON.stringify({
-            balance: 1,
-            req_id: Date.now()
-        }));
+        ws.send(JSON.stringify({ balance: 1, req_id: Date.now() }));
     }
     
-    if (data.tick) {
-        handleTick(data);
-    }
+    if (data.tick) handleTick(data);
     
-    if (data.proposal) {
-        handleProposalResponse(data.proposal);
-    }
+    if (data.proposal) handleProposalResponse(data.proposal);
     
-    if (data.buy) {
-        handleBuyResponse(data.buy);
-    }
+    if (data.buy) handleBuyResponse(data.buy);
     
-    if (data.sell) {
-        handleSellResponse(data.sell);
-    }
+    if (data.sell) handleSellResponse(data.sell);
     
-    // Handle contract updates from proposal_open_contract (without subscribe)
     if (data.proposal_open_contract) {
         const contract = data.proposal_open_contract;
         updateContractValue(contract);
@@ -446,15 +446,19 @@ function handleDerivMessage(data) {
             
             if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
                 currentPositions.higher = null;
+                // Clear tick indicators
+                const higherIndicator = document.getElementById('higher-tick-indicator');
+                if (higherIndicator) higherIndicator.innerHTML = '';
             }
             if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
                 currentPositions.lower = null;
+                // Clear tick indicators
+                const lowerIndicator = document.getElementById('lower-tick-indicator');
+                if (lowerIndicator) lowerIndicator.innerHTML = '';
             }
             
-            // Remove from subscription tracking
             contractSubscriptionIds = contractSubscriptionIds.filter(id => id !== contract.contract_id);
             
-            // If both contracts are closed, we can place new trades
             if (!currentPositions.higher && !currentPositions.lower && isBotRunning) {
                 tradingLock = false;
                 setTimeout(() => placeHedgeTrade(), 2000);
@@ -462,9 +466,7 @@ function handleDerivMessage(data) {
         }
     }
     
-    if (data.balance) {
-        updateBalanceDisplay(data.balance.balance);
-    }
+    if (data.balance) updateBalanceDisplay(data.balance.balance);
 }
 
 function updatePriceDisplay(price) {
@@ -498,7 +500,56 @@ async function startBot() {
     addLogEntry(`🎯 Profit Target: $${profitTargetInput.value} | Auto-close: ${autoCloseToggle.checked ? 'ON' : 'OFF'}`, 'system');
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     
+    // Create tick indicators based on duration
+    const duration = parseInt(durationInput.value);
+    createTickIndicators(duration);
+    
     await placeHedgeTrade();
+}
+
+function createTickIndicators(duration) {
+    const higherIndicator = document.getElementById('higher-tick-indicator');
+    const lowerIndicator = document.getElementById('lower-tick-indicator');
+    
+    if (higherIndicator) {
+        higherIndicator.innerHTML = '';
+        for (let i = 0; i < duration; i++) {
+            const circle = document.createElement('div');
+            circle.className = 'tick-circle';
+            higherIndicator.appendChild(circle);
+        }
+    }
+    
+    if (lowerIndicator) {
+        lowerIndicator.innerHTML = '';
+        for (let i = 0; i < duration; i++) {
+            const circle = document.createElement('div');
+            circle.className = 'tick-circle';
+            lowerIndicator.appendChild(circle);
+        }
+    }
+}
+
+function updateTickCircles(direction, ticksElapsed) {
+    const indicator = document.getElementById(`${direction}-tick-indicator`);
+    if (!indicator) return;
+    
+    const circles = indicator.querySelectorAll('.tick-circle');
+    const profit = currentPositions[direction]?.profit || 0;
+    
+    circles.forEach((circle, index) => {
+        if (index < ticksElapsed) {
+            if (profit > 0) {
+                circle.classList.add('profit');
+                circle.classList.remove('loss');
+            } else if (profit < 0) {
+                circle.classList.add('loss');
+                circle.classList.remove('profit');
+            } else {
+                circle.classList.remove('profit', 'loss');
+            }
+        }
+    });
 }
 
 function stopBot() {
@@ -507,6 +558,7 @@ function stopBot() {
     stopBtn.disabled = true;
     tradingLock = false;
     activeProposalCount = 0;
+    pendingProposals = { higher: null, lower: null };
     addLogEntry('🛑 Bot stopped', 'system');
     
     if (autoCloseInterval) {
@@ -547,7 +599,6 @@ async function placeHedgeTrade() {
     const duration = parseInt(durationInput.value);
     const offset = parseFloat(offsetInput.value);
     
-    // For Higher/Lower contracts, barriers should be relative (with + or - sign)
     const higherBarrier = `+${offset.toFixed(4)}`;
     const lowerBarrier = `-${offset.toFixed(4)}`;
     
@@ -561,6 +612,7 @@ async function placeHedgeTrade() {
     activeProposalCount = 2;
     
     // Proposal for CALL (higher)
+    const higherReqId = Date.now();
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -571,12 +623,14 @@ async function placeHedgeTrade() {
         duration_unit: "t",
         symbol: currentSymbol,
         barrier: higherBarrier,
-        req_id: Date.now()
+        req_id: higherReqId
     }));
+    pendingProposals.higher = higherReqId;
     
     // Proposal for PUT (lower)
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
+            const lowerReqId = Date.now();
             ws.send(JSON.stringify({
                 proposal: 1,
                 amount: stake,
@@ -587,8 +641,9 @@ async function placeHedgeTrade() {
                 duration_unit: "t",
                 symbol: currentSymbol,
                 barrier: lowerBarrier,
-                req_id: Date.now() + 1
+                req_id: lowerReqId
             }));
+            pendingProposals.lower = lowerReqId;
         }
     }, 200);
 }
@@ -600,19 +655,22 @@ function handleProposalResponse(proposal) {
         const profitPotential = payout - stake;
         const profitPercent = (profitPotential / stake) * 100;
         
-        addLogEntry(`📝 Proposal: ${proposal.contract_type || proposal.longcode?.substring(0, 50) || 'Contract'} | Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
+        // Determine which proposal this is based on contract type
+        const isHigher = proposal.contract_type === 'CALL';
+        const direction = isHigher ? 'higher' : 'lower';
         
-        // Check min payout condition
+        addLogEntry(`📝 ${direction.toUpperCase()} Proposal: ${proposal.contract_type} | Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
+        
         const minPayout = TRADING_CONFIG.minPayout;
         if (profitPotential >= minPayout) {
-            addLogEntry(`✅ Proposal accepted - purchasing contract...`, 'success');
+            addLogEntry(`✅ ${direction.toUpperCase()} proposal accepted - purchasing contract...`, 'success');
             ws.send(JSON.stringify({
                 buy: proposal.id,
                 price: proposal.ask_price,
                 req_id: Date.now()
             }));
         } else {
-            addLogEntry(`⚠️ Proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
+            addLogEntry(`⚠️ ${direction.toUpperCase()} proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
             activeProposalCount--;
             if (activeProposalCount === 0) {
                 tradingLock = false;
@@ -637,25 +695,21 @@ function handleBuyResponse(buy) {
         barrier: buy.barrier,
         duration: buy.duration,
         buyTimestamp: Date.now(),
-        contractType: buy.contract_type
+        contractType: buy.contract_type,
+        ticksElapsed: 0
     };
     
     addLogEntry(`✅ ${direction.toUpperCase()} contract purchased! ID: ${buy.contract_id} | Price: $${buy.buy_price}`, 'success');
     
-    // Subscribe to contract updates - CORRECT FORMAT without subscribe parameter
-    // The API returns proposal_open_contract automatically when we request it
     ws.send(JSON.stringify({
         proposal_open_contract: 1,
         contract_id: buy.contract_id,
         req_id: Date.now()
     }));
     
-    // Track the subscription so we can forget it later
     contractSubscriptionIds.push(buy.contract_id);
-    
     activeProposalCount--;
     
-    // Start auto-close monitoring if both contracts are active
     if (currentPositions.higher && currentPositions.lower && autoCloseToggle.checked && !autoCloseInterval) {
         autoCloseInterval = setInterval(checkAutoClose, 500);
         addLogEntry(`📊 Auto-close monitoring started (checking every 0.5s)`, 'system');
@@ -672,15 +726,30 @@ function updateContractValue(contract) {
         return;
     }
     
+    // Calculate actual profit correctly
     const currentValue = contract.sell_price || contract.current_spot || 0;
     const previousValue = previousValues[direction] || 0;
-    const profit = currentValue - (contract.buy_price || 0);
-    const profitPercent = (profit / (contract.buy_price || 1)) * 100;
-    const ticksLeft = Math.max(0, contract.date_expiry - Math.floor(Date.now() / 1000));
+    const buyPrice = contract.buy_price || currentPositions[direction]?.entryPrice || 0;
+    const profit = currentValue - buyPrice;
+    const profitPercent = (profit / (buyPrice || 1)) * 100;
+    
+    // Calculate ticks left based on contract expiry
+    let ticksLeft = 0;
+    if (contract.date_expiry) {
+        ticksLeft = Math.max(0, contract.date_expiry - Math.floor(Date.now() / 1000));
+    } else if (currentPositions[direction]?.duration) {
+        const elapsedSeconds = (Date.now() - (currentPositions[direction]?.buyTimestamp || Date.now())) / 1000;
+        ticksLeft = Math.max(0, currentPositions[direction].duration - Math.floor(elapsedSeconds));
+    }
+    
+    // Calculate ticks elapsed
+    const totalDuration = currentPositions[direction]?.duration || parseInt(durationInput.value);
+    const ticksElapsed = totalDuration - ticksLeft;
     
     if (currentPositions[direction]) {
         currentPositions[direction].currentValue = currentValue;
         currentPositions[direction].ticksLeft = ticksLeft;
+        currentPositions[direction].ticksElapsed = ticksElapsed;
         currentPositions[direction].profit = profit;
         currentPositions[direction].profitPercent = profitPercent;
     }
@@ -688,6 +757,7 @@ function updateContractValue(contract) {
     const change = currentValue - previousValue;
     
     updatePositionDisplay(direction, currentValue, profit, profitPercent, change, ticksLeft);
+    updateTickCircles(direction, ticksElapsed);
     
     if (change > 0) {
         showGlow(direction, 'gain');
@@ -735,12 +805,12 @@ function updatePositionDisplay(direction, value, profit, profitPercent, change, 
 }
 
 function updateCombinedValues() {
-    const higherValue = previousValues.higher || 0;
-    const lowerValue = previousValues.lower || 0;
-    const combinedValue = higherValue + lowerValue;
+    const higherProfit = currentPositions.higher?.profit || 0;
+    const lowerProfit = currentPositions.lower?.profit || 0;
     const totalStake = parseFloat(stakeInput.value) * 2;
-    const netProfit = combinedValue - totalStake;
+    const netProfit = higherProfit + lowerProfit;
     const netProfitPercent = (netProfit / totalStake) * 100;
+    const combinedValue = (currentPositions.higher?.currentValue || 0) + (currentPositions.lower?.currentValue || 0);
     
     const combinedValueEl = document.getElementById('combined-value');
     const netProfitEl = document.getElementById('net-profit');
@@ -764,14 +834,11 @@ function updateCombinedValues() {
 function checkAutoClose() {
     if (!autoCloseToggle.checked || !isBotRunning) return;
     
-    const higherValue = previousValues.higher || 0;
-    const lowerValue = previousValues.lower || 0;
-    const combinedValue = higherValue + lowerValue;
-    const totalStake = parseFloat(stakeInput.value) * 2;
-    const netProfit = combinedValue - totalStake;
+    const higherProfit = currentPositions.higher?.profit || 0;
+    const lowerProfit = currentPositions.lower?.profit || 0;
+    const netProfit = higherProfit + lowerProfit;
     const target = parseFloat(profitTargetInput.value);
     
-    // Auto-close when profit target is reached
     if (netProfit >= target && target > 0) {
         addLogEntry(`🎯🎯🎯 TARGET REACHED! Net profit $${netProfit.toFixed(2)} >= $${target.toFixed(2)}`, 'win');
         addLogEntry(`🔄 Closing both contracts to secure profit...`, 'win');
@@ -779,19 +846,11 @@ function checkAutoClose() {
         return;
     }
     
-    // Optional: Auto-close when one contract hits a good profit and the other is losing
-    const higherProfit = currentPositions.higher?.profit || 0;
-    const lowerProfit = currentPositions.lower?.profit || 0;
-    const higherPercent = currentPositions.higher?.profitPercent || 0;
-    const lowerPercent = currentPositions.lower?.profitPercent || 0;
-    
     if (higherProfit > 1.0 && lowerProfit < -0.5) {
-        addLogEntry(`🎯 Profitable opportunity detected! Higher: +$${higherProfit.toFixed(2)} (${higherPercent.toFixed(1)}%) | Lower: $${lowerProfit.toFixed(2)} (${lowerPercent.toFixed(1)}%)`, 'win');
-        addLogEntry(`🔄 Closing to lock in profit...`, 'win');
+        addLogEntry(`🎯 Profitable opportunity detected! Higher: +$${higherProfit.toFixed(2)} | Lower: $${lowerProfit.toFixed(2)}`, 'win');
         closeBothContracts();
     } else if (lowerProfit > 1.0 && higherProfit < -0.5) {
-        addLogEntry(`🎯 Profitable opportunity detected! Lower: +$${lowerProfit.toFixed(2)} (${lowerPercent.toFixed(1)}%) | Higher: $${higherProfit.toFixed(2)} (${higherPercent.toFixed(1)}%)`, 'win');
-        addLogEntry(`🔄 Closing to lock in profit...`, 'win');
+        addLogEntry(`🎯 Profitable opportunity detected! Lower: +$${lowerProfit.toFixed(2)} | Higher: $${higherProfit.toFixed(2)}`, 'win');
         closeBothContracts();
     }
 }
@@ -799,11 +858,13 @@ function checkAutoClose() {
 async function closeContract(direction, isEmergency = false) {
     const position = currentPositions[direction];
     if (!position || !position.id) {
+        addLogEntry(`⚠️ No active ${direction.toUpperCase()} contract to close`, 'system');
         return;
     }
     
     const profit = position.profit || 0;
     addLogEntry(`🔒 Closing ${direction.toUpperCase()} contract (ID: ${position.id}) | Current P/L: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}${isEmergency ? ' - EMERGENCY' : ''}`, 'system');
+    
     ws.send(JSON.stringify({ 
         sell: position.id,
         price: 0,
@@ -812,15 +873,11 @@ async function closeContract(direction, isEmergency = false) {
 }
 
 async function closeBothContracts() {
-    let higherClosed = false, lowerClosed = false;
-    
     if (currentPositions.higher && currentPositions.higher.id) {
         await closeContract('higher');
-        higherClosed = true;
     }
     if (currentPositions.lower && currentPositions.lower.id) {
         await closeContract('lower');
-        lowerClosed = true;
     }
     
     if (autoCloseInterval) {
