@@ -35,6 +35,7 @@ let pendingProposals = {
     higher: null,
     lower: null
 };
+let proposalMap = new Map(); // Map proposal ID to direction
 
 // Trading Parameters
 const TRADING_CONFIG = {
@@ -235,34 +236,11 @@ function handleTick(data) {
 }
 
 function updateTickIndicators() {
-    // Update tick indicators for higher position
-    if (currentPositions.higher && currentPositions.higher.ticksLeft !== undefined) {
-        const higherIndicator = document.getElementById('higher-tick-indicator');
-        if (higherIndicator) {
-            const profit = currentPositions.higher.profit || 0;
-            if (profit > 0) {
-                higherIndicator.classList.add('profit-tick');
-                setTimeout(() => higherIndicator.classList.remove('profit-tick'), 300);
-            } else if (profit < 0) {
-                higherIndicator.classList.add('loss-tick');
-                setTimeout(() => higherIndicator.classList.remove('loss-tick'), 300);
-            }
-        }
+    if (currentPositions.higher && currentPositions.higher.ticksElapsed !== undefined) {
+        updateTickCircles('higher', currentPositions.higher.ticksElapsed, currentPositions.higher.profit);
     }
-    
-    // Update tick indicators for lower position
-    if (currentPositions.lower && currentPositions.lower.ticksLeft !== undefined) {
-        const lowerIndicator = document.getElementById('lower-tick-indicator');
-        if (lowerIndicator) {
-            const profit = currentPositions.lower.profit || 0;
-            if (profit > 0) {
-                lowerIndicator.classList.add('profit-tick');
-                setTimeout(() => lowerIndicator.classList.remove('profit-tick'), 300);
-            } else if (profit < 0) {
-                lowerIndicator.classList.add('loss-tick');
-                setTimeout(() => lowerIndicator.classList.remove('loss-tick'), 300);
-            }
-        }
+    if (currentPositions.lower && currentPositions.lower.ticksElapsed !== undefined) {
+        updateTickCircles('lower', currentPositions.lower.ticksElapsed, currentPositions.lower.profit);
     }
 }
 
@@ -424,7 +402,19 @@ function handleDerivMessage(data) {
     
     if (data.tick) handleTick(data);
     
-    if (data.proposal) handleProposalResponse(data.proposal);
+    if (data.proposal) {
+        // Get the direction from our map or determine from contract_type
+        let direction = null;
+        if (data.proposal.contract_type === 'CALL') {
+            direction = 'higher';
+        } else if (data.proposal.contract_type === 'PUT') {
+            direction = 'lower';
+        } else {
+            // Try to get from our stored map
+            direction = proposalMap.get(data.proposal.id);
+        }
+        handleProposalResponse(data.proposal, direction);
+    }
     
     if (data.buy) handleBuyResponse(data.buy);
     
@@ -446,13 +436,11 @@ function handleDerivMessage(data) {
             
             if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
                 currentPositions.higher = null;
-                // Clear tick indicators
                 const higherIndicator = document.getElementById('higher-tick-indicator');
                 if (higherIndicator) higherIndicator.innerHTML = '';
             }
             if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
                 currentPositions.lower = null;
-                // Clear tick indicators
                 const lowerIndicator = document.getElementById('lower-tick-indicator');
                 if (lowerIndicator) lowerIndicator.innerHTML = '';
             }
@@ -530,23 +518,38 @@ function createTickIndicators(duration) {
     }
 }
 
-function updateTickCircles(direction, ticksElapsed) {
+function updateTickCircles(direction, ticksElapsed, profit) {
     const indicator = document.getElementById(`${direction}-tick-indicator`);
     if (!indicator) return;
     
     const circles = indicator.querySelectorAll('.tick-circle');
-    const profit = currentPositions[direction]?.profit || 0;
     
     circles.forEach((circle, index) => {
         if (index < ticksElapsed) {
-            if (profit > 0) {
-                circle.classList.add('profit');
-                circle.classList.remove('loss');
-            } else if (profit < 0) {
-                circle.classList.add('loss');
-                circle.classList.remove('profit');
-            } else {
-                circle.classList.remove('profit', 'loss');
+            // Animate the current tick
+            if (index === ticksElapsed - 1) {
+                if (profit > 0) {
+                    circle.classList.add('profit-tick');
+                    setTimeout(() => circle.classList.remove('profit-tick'), 300);
+                    circle.classList.add('profit');
+                    circle.classList.remove('loss');
+                } else if (profit < 0) {
+                    circle.classList.add('loss-tick');
+                    setTimeout(() => circle.classList.remove('loss-tick'), 300);
+                    circle.classList.add('loss');
+                    circle.classList.remove('profit');
+                } else {
+                    circle.classList.remove('profit', 'loss');
+                }
+            } else if (index < ticksElapsed - 1) {
+                // Already processed ticks - keep their color
+                if (profit > 0) {
+                    circle.classList.add('profit');
+                    circle.classList.remove('loss');
+                } else if (profit < 0) {
+                    circle.classList.add('loss');
+                    circle.classList.remove('profit');
+                }
             }
         }
     });
@@ -559,6 +562,7 @@ function stopBot() {
     tradingLock = false;
     activeProposalCount = 0;
     pendingProposals = { higher: null, lower: null };
+    proposalMap.clear();
     addLogEntry('🛑 Bot stopped', 'system');
     
     if (autoCloseInterval) {
@@ -613,6 +617,8 @@ async function placeHedgeTrade() {
     
     // Proposal for CALL (higher)
     const higherReqId = Date.now();
+    const higherProposalId = `higher_${higherReqId}`;
+    proposalMap.set(higherProposalId, 'higher');
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -625,12 +631,13 @@ async function placeHedgeTrade() {
         barrier: higherBarrier,
         req_id: higherReqId
     }));
-    pendingProposals.higher = higherReqId;
     
     // Proposal for PUT (lower)
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             const lowerReqId = Date.now();
+            const lowerProposalId = `lower_${lowerReqId}`;
+            proposalMap.set(lowerProposalId, 'lower');
             ws.send(JSON.stringify({
                 proposal: 1,
                 amount: stake,
@@ -643,34 +650,38 @@ async function placeHedgeTrade() {
                 barrier: lowerBarrier,
                 req_id: lowerReqId
             }));
-            pendingProposals.lower = lowerReqId;
         }
     }, 200);
 }
 
-function handleProposalResponse(proposal) {
+function handleProposalResponse(proposal, direction) {
     if (proposal && proposal.id) {
+        // If direction wasn't passed, try to determine from contract_type
+        if (!direction) {
+            if (proposal.contract_type === 'CALL') {
+                direction = 'higher';
+            } else if (proposal.contract_type === 'PUT') {
+                direction = 'lower';
+            }
+        }
+        
         const payout = parseFloat(proposal.payout);
         const stake = parseFloat(stakeInput.value);
         const profitPotential = payout - stake;
         const profitPercent = (profitPotential / stake) * 100;
         
-        // Determine which proposal this is based on contract type
-        const isHigher = proposal.contract_type === 'CALL';
-        const direction = isHigher ? 'higher' : 'lower';
-        
-        addLogEntry(`📝 ${direction.toUpperCase()} Proposal: ${proposal.contract_type} | Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
+        addLogEntry(`📝 ${direction?.toUpperCase() || 'UNKNOWN'} Proposal: ${proposal.contract_type || 'Contract'} | Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
         
         const minPayout = TRADING_CONFIG.minPayout;
         if (profitPotential >= minPayout) {
-            addLogEntry(`✅ ${direction.toUpperCase()} proposal accepted - purchasing contract...`, 'success');
+            addLogEntry(`✅ ${direction?.toUpperCase() || ''} proposal accepted - purchasing contract...`, 'success');
             ws.send(JSON.stringify({
                 buy: proposal.id,
                 price: proposal.ask_price,
                 req_id: Date.now()
             }));
         } else {
-            addLogEntry(`⚠️ ${direction.toUpperCase()} proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
+            addLogEntry(`⚠️ ${direction?.toUpperCase() || ''} proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
             activeProposalCount--;
             if (activeProposalCount === 0) {
                 tradingLock = false;
@@ -689,6 +700,14 @@ function handleProposalResponse(proposal) {
 
 function handleBuyResponse(buy) {
     const direction = buy.contract_type === 'CALL' ? 'higher' : 'lower';
+    
+    // Only accept if this direction doesn't already have a contract
+    if (currentPositions[direction]) {
+        addLogEntry(`⚠️ ${direction.toUpperCase()} contract already exists. Skipping duplicate.`, 'system');
+        activeProposalCount--;
+        return;
+    }
+    
     currentPositions[direction] = {
         id: buy.contract_id,
         entryPrice: buy.buy_price,
@@ -696,7 +715,10 @@ function handleBuyResponse(buy) {
         duration: buy.duration,
         buyTimestamp: Date.now(),
         contractType: buy.contract_type,
-        ticksElapsed: 0
+        ticksElapsed: 0,
+        currentValue: buy.buy_price,
+        profit: 0,
+        profitPercent: 0
     };
     
     addLogEntry(`✅ ${direction.toUpperCase()} contract purchased! ID: ${buy.contract_id} | Price: $${buy.buy_price}`, 'success');
@@ -727,11 +749,10 @@ function updateContractValue(contract) {
     }
     
     // Calculate actual profit correctly
-    const currentValue = contract.sell_price || contract.current_spot || 0;
-    const previousValue = previousValues[direction] || 0;
+    const currentValue = contract.sell_price || contract.current_spot || contract.buy_price || 0;
     const buyPrice = contract.buy_price || currentPositions[direction]?.entryPrice || 0;
     const profit = currentValue - buyPrice;
-    const profitPercent = (profit / (buyPrice || 1)) * 100;
+    const profitPercent = buyPrice > 0 ? (profit / buyPrice) * 100 : 0;
     
     // Calculate ticks left based on contract expiry
     let ticksLeft = 0;
@@ -744,7 +765,7 @@ function updateContractValue(contract) {
     
     // Calculate ticks elapsed
     const totalDuration = currentPositions[direction]?.duration || parseInt(durationInput.value);
-    const ticksElapsed = totalDuration - ticksLeft;
+    const ticksElapsed = Math.max(0, totalDuration - ticksLeft);
     
     if (currentPositions[direction]) {
         currentPositions[direction].currentValue = currentValue;
@@ -754,10 +775,10 @@ function updateContractValue(contract) {
         currentPositions[direction].profitPercent = profitPercent;
     }
     
-    const change = currentValue - previousValue;
+    const change = currentValue - (previousValues[direction] || 0);
     
     updatePositionDisplay(direction, currentValue, profit, profitPercent, change, ticksLeft);
-    updateTickCircles(direction, ticksElapsed);
+    updateTickCircles(direction, ticksElapsed, profit);
     
     if (change > 0) {
         showGlow(direction, 'gain');
@@ -809,7 +830,7 @@ function updateCombinedValues() {
     const lowerProfit = currentPositions.lower?.profit || 0;
     const totalStake = parseFloat(stakeInput.value) * 2;
     const netProfit = higherProfit + lowerProfit;
-    const netProfitPercent = (netProfit / totalStake) * 100;
+    const netProfitPercent = totalStake > 0 ? (netProfit / totalStake) * 100 : 0;
     const combinedValue = (currentPositions.higher?.currentValue || 0) + (currentPositions.lower?.currentValue || 0);
     
     const combinedValueEl = document.getElementById('combined-value');
