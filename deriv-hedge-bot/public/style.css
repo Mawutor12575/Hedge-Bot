@@ -676,3 +676,47 @@ input:checked + .toggle-slider:before {
         max-height: 150px;
     }
 }
+
+/* Tick Indicator Circles */
+.tick-indicator {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    margin-top: 15px;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.tick-circle {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+    transition: all 0.2s ease;
+}
+
+.tick-circle.profit {
+    background: #00ff88;
+    box-shadow: 0 0 5px #00ff88;
+}
+
+.tick-circle.loss {
+    background: #ff4444;
+    box-shadow: 0 0 5px #ff4444;
+}
+
+.tick-circle.profit-tick {
+    background: #00ff88;
+    animation: tickPulse 0.3s ease;
+}
+
+.tick-circle.loss-tick {
+    background: #ff4444;
+    animation: tickPulse 0.3s ease;
+}
+
+@keyframes tickPulse {
+    0% { transform: scale(1); opacity: 1; }
+    50% { transform: scale(1.5); opacity: 0.7; }
+    100% { transform: scale(1); opacity: 1; }
+}
