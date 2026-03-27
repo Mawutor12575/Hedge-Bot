@@ -685,11 +685,12 @@ input:checked + .toggle-slider:before {
     margin-top: 15px;
     padding-top: 10px;
     border-top: 1px solid rgba(255, 255, 255, 0.1);
+    flex-wrap: wrap;
 }
 
 .tick-circle {
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
     background: rgba(255, 255, 255, 0.2);
     transition: all 0.2s ease;
