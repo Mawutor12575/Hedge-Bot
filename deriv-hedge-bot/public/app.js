@@ -30,6 +30,7 @@ let lastTenDigits = [];
 let isTickDisplayPaused = false;
 let tradingLock = false;
 let activeProposalCount = 0;
+let contractSubscriptionIds = []; // Track active contract subscriptions
 
 // Trading Parameters (from DBot)
 const TRADING_CONFIG = {
@@ -191,11 +192,13 @@ function subscribeToTicks() {
     lastTenDigits = [];
     updateTickDisplay();
     
+    // Unsubscribe from previous ticks
     ws.send(JSON.stringify({
         forget_all: 'ticks',
         req_id: Date.now()
     }));
     
+    // Subscribe to new ticks
     ws.send(JSON.stringify({
         ticks: currentSymbol,
         subscribe: 1,
@@ -403,16 +406,10 @@ function handleDerivMessage(data) {
         enableControls(true);
         subscribeToTicks();
         
+        // Subscribe to balance updates (without subscribe parameter - just get balance)
         ws.send(JSON.stringify({
             balance: 1,
-            subscribe: 1,
             req_id: Date.now()
-        }));
-
-        ws.send(JSON.stringify({
-        portfolio: 1,
-        subscribe: 1,
-        req_id: Date.now()
         }));
     }
     
@@ -432,20 +429,7 @@ function handleDerivMessage(data) {
         handleSellResponse(data.sell);
     }
     
-    if (data.contract) {
-        updateContractValue(data.contract);
-    }
-    
-    if (data.portfolio && data.portfolio.contracts) {
-        data.portfolio.contracts.forEach(contract => {
-            updateContractValue(contract);
-        });
-    }
-    
-    if (data.balance) {
-        updateBalanceDisplay(data.balance.balance);
-    }
-    
+    // Handle contract updates from proposal_open_contract (without subscribe)
     if (data.proposal_open_contract) {
         const contract = data.proposal_open_contract;
         updateContractValue(contract);
@@ -467,12 +451,19 @@ function handleDerivMessage(data) {
                 currentPositions.lower = null;
             }
             
+            // Remove from subscription tracking
+            contractSubscriptionIds = contractSubscriptionIds.filter(id => id !== contract.contract_id);
+            
             // If both contracts are closed, we can place new trades
             if (!currentPositions.higher && !currentPositions.lower && isBotRunning) {
                 tradingLock = false;
                 setTimeout(() => placeHedgeTrade(), 2000);
             }
         }
+    }
+    
+    if (data.balance) {
+        updateBalanceDisplay(data.balance.balance);
     }
 }
 
@@ -557,7 +548,6 @@ async function placeHedgeTrade() {
     const offset = parseFloat(offsetInput.value);
     
     // For Higher/Lower contracts, barriers should be relative (with + or - sign)
-    // Format: "+0.5" for higher, "-0.5" for lower
     const higherBarrier = `+${offset.toFixed(4)}`;
     const lowerBarrier = `-${offset.toFixed(4)}`;
     
@@ -570,7 +560,7 @@ async function placeHedgeTrade() {
     
     activeProposalCount = 2;
     
-    // Proposal for CALL (higher) - Using relative barrier
+    // Proposal for CALL (higher)
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -584,7 +574,7 @@ async function placeHedgeTrade() {
         req_id: Date.now()
     }));
     
-    // Proposal for PUT (lower) - Using relative barrier
+    // Proposal for PUT (lower)
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
@@ -610,10 +600,10 @@ function handleProposalResponse(proposal) {
         const profitPotential = payout - stake;
         const profitPercent = (profitPotential / stake) * 100;
         
-        addLogEntry(`📝 Proposal accepted - Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
+        addLogEntry(`📝 Proposal: ${proposal.contract_type || proposal.longcode?.substring(0, 50) || 'Contract'} | Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
         
-        // Check min payout condition (like DBot's min_payout check)
-        const minPayout = TRADING_CONFIG.minPayout; // Approximate min payout threshold
+        // Check min payout condition
+        const minPayout = TRADING_CONFIG.minPayout;
         if (profitPotential >= minPayout) {
             addLogEntry(`✅ Proposal accepted - purchasing contract...`, 'success');
             ws.send(JSON.stringify({
@@ -628,6 +618,13 @@ function handleProposalResponse(proposal) {
                 tradingLock = false;
                 setTimeout(() => placeHedgeTrade(), 2000);
             }
+        }
+    } else if (proposal && proposal.error) {
+        addLogEntry(`❌ Proposal error: ${proposal.error.message}`, 'system');
+        activeProposalCount--;
+        if (activeProposalCount === 0) {
+            tradingLock = false;
+            setTimeout(() => placeHedgeTrade(), 2000);
         }
     }
 }
@@ -645,15 +642,16 @@ function handleBuyResponse(buy) {
     
     addLogEntry(`✅ ${direction.toUpperCase()} contract purchased! ID: ${buy.contract_id} | Price: $${buy.buy_price}`, 'success');
     
-    // Subscribe to contract updates
+    // Subscribe to contract updates - CORRECT FORMAT without subscribe parameter
+    // The API returns proposal_open_contract automatically when we request it
     ws.send(JSON.stringify({
-        proposal_open_contract: 1,        // ← This was missing
+        proposal_open_contract: 1,
         contract_id: buy.contract_id,
-        subscribe: 1,
         req_id: Date.now()
     }));
     
-
+    // Track the subscription so we can forget it later
+    contractSubscriptionIds.push(buy.contract_id);
     
     activeProposalCount--;
     
