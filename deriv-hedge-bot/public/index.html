@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deriv Hedge Bot | Mid-Trade Exit System</title>
+    <title>Deriv Hedge Bot | Intelligent Mid-Trade Exit System</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 </head>
@@ -13,7 +13,7 @@
             <div class="logo">
                 <span class="logo-icon">⚡</span>
                 <h1>Hedge Bot</h1>
-                <span class="badge">Mid-Trade Exit</span>
+                <span class="badge" style="background: linear-gradient(135deg, #00ff88, #00ccff); color: #0a0a0a;">INTELLIGENT v2.0</span>
             </div>
             <div class="account-section">
                 <div class="price-display">
@@ -42,7 +42,7 @@
         <div class="main-content">
             <!-- Market Selection Card -->
             <div class="card market-card">
-                <h2>Market Selection</h2>
+                <h2>Market Selection <span id="smart-status" style="font-size:12px; color:#00ccff; margin-left:10px;">🧠 SMART MODE ENABLED</span></h2>
                 <div class="control-group">
                     <div class="input-group" style="flex: 2;">
                         <label>Trading Instrument</label>
@@ -51,31 +51,36 @@
                         </select>
                     </div>
                     <div class="input-group">
-                        <label>Last Digit</label>
-                        <div id="last-digit-display" class="last-digit">-</div>
+                        <label>Live Price</label>
+                        <div id="last-digit-display" class="last-digit" style="font-size:28px;">-</div>
+                    </div>
+                    <div class="input-group" style="flex: 1;">
+                        <label>Volatility (pts/tick)</label>
+                        <div id="volatility-display" class="last-digit" style="background:rgba(0,204,255,0.15); color:#00ccff; font-size:18px;">0.00</div>
                     </div>
                 </div>
                 
                 <!-- Tick Display -->
                 <div class="tick-display-section">
                     <div class="tick-header">
-                        <h3>Live Ticks</h3>
+                        <h3>Live Ticks • Real-time Adaptive</h3>
                         <button id="pause-ticks-btn" class="btn-small">Pause</button>
                     </div>
                     <div id="tick-history" class="tick-history">
-                        <div class="tick-placeholder">Waiting for ticks...</div>
+                        <div class="tick-placeholder">Waiting for intelligent tick feed...</div>
                     </div>
                     <div class="tick-stats">
                         <span>Last 10 digits: </span>
                         <span id="last-ten-digits" class="digit-sequence">-</span>
+                        <span style="margin-left:20px; font-size:12px;">Avg move: <span id="avg-move" class="digit-sequence" style="font-size:15px;color:#00ccff;">0.00</span></span>
                     </div>
                 </div>
             </div>
 
             <div class="card control-panel">
-                <h2>Control Panel</h2>
+                <h2>Control Panel • Intelligent Hedge Engine</h2>
                 <div class="control-group">
-                    <button id="start-bot" class="btn-start" disabled>▶ Start Bot</button>
+                    <button id="start-bot" class="btn-start" disabled>▶ Start Intelligent Bot</button>
                     <button id="stop-bot" class="btn-stop" disabled>⏹ Stop Bot</button>
                     <button id="emergency-stop" class="btn-emergency" disabled>⚠ EMERGENCY STOP</button>
                 </div>
@@ -84,34 +89,36 @@
                     <div class="toggle-group">
                         <label>Auto Close Mid-Trade</label>
                         <div class="toggle-switch">
-                            <input type="checkbox" id="auto-close-toggle" disabled>
+                            <input type="checkbox" id="auto-close-toggle" disabled checked>
                             <span class="toggle-slider"></span>
                         </div>
                     </div>
                     <div class="input-group">
                         <label>Profit Target ($)</label>
-                        <input type="number" id="profit-target" value="2.00" step="0.10" disabled>
+                        <input type="number" id="profit-target" value="4.00" step="0.10" disabled>
+                    </div>
+                    <div class="input-group">
+                        <label>Smart Offset</label>
+                        <input type="number" id="offset" value="1.00" step="0.1" disabled>
+                        <small id="offset-hint" style="font-size:10px;color:#00ccff;">(auto-adjusted by volatility)</small>
                     </div>
                 </div>
 
                 <div class="control-group">
                     <div class="input-group">
-                        <label>Stake ($)</label>
+                        <label>Stake per side ($)</label>
                         <input type="number" id="stake" value="1.00" step="0.50" disabled>
                     </div>
                     <div class="input-group">
                         <label>Duration (ticks)</label>
-                        <input type="number" id="duration" value="10" step="1" disabled>
-                    </div>
-                    <div class="input-group">
-                        <label>Barrier Offset</label>
-                        <input type="number" id="offset" value="0.5" step="0.1" disabled>
+                        <input type="number" id="duration" value="8" step="1" disabled>
                     </div>
                 </div>
             </div>
 
+            <!-- The rest of your HTML remains exactly the same (positions, stats, log) -->
             <div class="card positions-card">
-                <h2>Active Positions</h2>
+                <h2>Active Positions • Real-time P&amp;L</h2>
                 <div class="positions-container">
                     <div id="higher-position" class="position-item">
                         <div class="position-header">
@@ -167,7 +174,6 @@
                         </div>
                         <button class="btn-close" id="close-lower" disabled>Close Lower</button>
                         <div class="tick-indicator" id="lower-tick-indicator"></div>
-
                     </div>
                 </div>
 
@@ -190,12 +196,12 @@
                 </div>
 
                 <div class="manual-controls">
-                    <button id="close-both" class="btn-close-both" disabled>🔒 CLOSE BOTH</button>
+                    <button id="close-both" class="btn-close-both" disabled>🔒 CLOSE BOTH POSITIONS</button>
                 </div>
             </div>
 
             <div class="card stats-card">
-                <h2>Session Statistics</h2>
+                <h2>Session Statistics • Live Intelligence</h2>
                 <div class="stats-grid">
                     <div class="stat-item">
                         <span class="stat-label">Total Trades</span>
@@ -210,16 +216,16 @@
                         <span id="total-profit" class="stat-value">$0.00</span>
                     </div>
                     <div class="stat-item">
-                        <span class="stat-label">Session P&L</span>
+                        <span class="stat-label">Session P&amp;L</span>
                         <span id="session-pnl" class="stat-value">$0.00</span>
                     </div>
                 </div>
             </div>
 
             <div class="card log-card">
-                <h2>Trade Log</h2>
+                <h2>Trade Log • Intelligent Decisions</h2>
                 <div id="trade-log" class="trade-log">
-                    <div class="log-entry system">System ready. Enter your API token to connect.</div>
+                    <div class="log-entry system">🚀 Intelligent Hedge Bot v2.0 initialized. Connect token to begin.</div>
                 </div>
             </div>
         </div>
