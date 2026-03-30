@@ -31,12 +31,12 @@ let isTickDisplayPaused = false;
 let tradingLock = false;
 let activeProposalCount = 0;
 let contractSubscriptionIds = [];
+let proposalMap = new Map(); // Map proposal ID to direction
+let currentToken = null;
 let pendingProposals = {
     higher: null,
     lower: null
 };
-let proposalMap = new Map(); // Map proposal ID to direction
-let currentToken = null;
 
 // Trading Parameters
 const TRADING_CONFIG = {
@@ -46,13 +46,11 @@ const TRADING_CONFIG = {
     defaultStake: 1.0
 };
 
-// DOM Elements - Updated to match HTML
+// DOM Elements
 const loginBtn = document.getElementById('connect-btn');
 const startBtn = document.getElementById('start-btn');
 const stopBtn = document.getElementById('stop-btn');
 const emergencyBtn = document.getElementById('emergency-btn');
-const autoCloseToggle = null; // Not in HTML
-const profitTargetInput = null; // Not in HTML
 const stakeInput = document.getElementById('stake');
 const durationInput = document.getElementById('duration');
 const offsetInput = document.getElementById('offset');
@@ -63,14 +61,8 @@ const demoBtn = document.getElementById('demo-switch');
 const realBtn = document.getElementById('real-switch');
 const authStatus = document.getElementById('connection-status');
 const apiTokenInput = document.getElementById('token');
-const tokenSection = null; // Not needed
 const accountSwitch = document.getElementById('account-buttons');
 const marketSelect = document.getElementById('market');
-const tickHistoryDiv = null; // Not in HTML
-const pauseTicksBtn = null; // Not in HTML
-const lastTenDigitsSpan = null; // Not in HTML
-const lastDigitDisplay = null; // Not in HTML
-const marketSymbolSpan = null; // Not in HTML
 
 // Set default values
 if (stakeInput) stakeInput.value = TRADING_CONFIG.defaultStake;
@@ -204,15 +196,6 @@ function handleTick(data) {
     
     currentPrice = data.tick.quote;
     updatePriceDisplay(currentPrice);
-    
-    const tickData = {
-        price: currentPrice,
-        time: Date.now(),
-        change: tickHistory.length > 0 ? currentPrice - tickHistory[0].price : 0
-    };
-    
-    tickHistory.unshift(tickData);
-    if (tickHistory.length > maxTickHistory) tickHistory.pop();
 }
 
 function updatePriceDisplay(price) {
@@ -248,12 +231,10 @@ function connectWebSocket() {
         ws.close();
     }
     
-    // Create WebSocket connection
     ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
     
     ws.onopen = () => {
         addLogEntry('WebSocket connected, authorizing...', 'system');
-        // Send authorization
         ws.send(JSON.stringify({ 
             authorize: currentToken,
             req_id: Date.now()
@@ -263,7 +244,7 @@ function connectWebSocket() {
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
-            console.log('Received:', data); // Debug log
+            console.log('Received:', data);
             handleDerivMessage(data);
         } catch (error) {
             addLogEntry(`Error parsing message: ${error.message}`, 'system');
@@ -284,14 +265,12 @@ function connectWebSocket() {
         currentPositions = { higher: null, lower: null };
         previousValues = { higher: 0, lower: 0 };
         
-        // Reset displays
         const resetEls = ['higher-current', 'lower-current', 'higher-pnl', 'lower-pnl', 'net-profit'];
         resetEls.forEach(id => {
             const el = document.getElementById(id);
             if (el) el.textContent = '-';
         });
         
-        // Reconnection logic
         if (isBotRunning && reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
             addLogEntry(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`, 'system');
@@ -344,8 +323,6 @@ function handleDerivMessage(data) {
         
         enableControls(true);
         subscribeToTicks();
-        
-        // Request balance
         ws.send(JSON.stringify({ balance: 1, req_id: Date.now() }));
         return;
     }
@@ -357,13 +334,18 @@ function handleDerivMessage(data) {
     
     if (data.proposal) {
         let direction = null;
-        if (data.proposal.contract_type === 'CALL') {
-            direction = 'higher';
-        } else if (data.proposal.contract_type === 'PUT') {
-            direction = 'lower';
-        } else {
-            direction = proposalMap.get(data.proposal.id);
+        // Try to get direction from our stored map
+        direction = proposalMap.get(data.req_id);
+        
+        // Fallback to contract_type if not found
+        if (!direction) {
+            if (data.proposal.contract_type === 'CALL') {
+                direction = 'higher';
+            } else if (data.proposal.contract_type === 'PUT') {
+                direction = 'lower';
+            }
         }
+        
         handleProposalResponse(data.proposal, direction);
         return;
     }
@@ -497,15 +479,20 @@ async function placeHedgeTrade() {
     
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     addLogEntry(`🎯 Placing Parallel Hedge Trade at ${currentPrice.toFixed(2)}`, 'system');
-    addLogEntry(`📈 HIGHER: ${higherBarrier} (CALL) - Price must rise by ${offset} points`, 'system');
-    addLogEntry(`📉 LOWER: ${lowerBarrier} (PUT) - Price must fall by ${offset} points`, 'system');
+    addLogEntry(`📈 HIGHER (CALL): Barrier ${higherBarrier} - Price must rise by ${offset} points`, 'system');
+    addLogEntry(`📉 LOWER (PUT): Barrier ${lowerBarrier} - Price must fall by ${offset} points`, 'system');
     addLogEntry(`⏱️ Duration: ${duration} ticks | 💰 Stake: $${stake} each`, 'system');
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     
     activeProposalCount = 2;
+    pendingProposals = { higher: null, lower: null };
     
-    // Proposal for CALL (higher)
-    const higherReqId = Date.now();
+    // Create a unique timestamp for both proposals to ensure they're linked
+    const baseTimestamp = Date.now();
+    
+    // Send both proposals in the same event loop cycle
+    // Higher (CALL) proposal
+    const higherReqId = baseTimestamp;
     proposalMap.set(higherReqId, 'higher');
     ws.send(JSON.stringify({
         proposal: 1,
@@ -520,62 +507,65 @@ async function placeHedgeTrade() {
         req_id: higherReqId
     }));
     
-    // Proposal for PUT (lower)
-    setTimeout(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            const lowerReqId = Date.now();
-            proposalMap.set(lowerReqId, 'lower');
-            ws.send(JSON.stringify({
-                proposal: 1,
-                amount: stake,
-                basis: 'stake',
-                contract_type: "PUT",
-                currency: "USD",
-                duration: duration,
-                duration_unit: "t",
-                symbol: currentSymbol,
-                barrier: lowerBarrier,
-                req_id: lowerReqId
-            }));
-        }
-    }, 200);
+    // Lower (PUT) proposal - using same base timestamp + 1 to ensure unique but still immediate
+    const lowerReqId = baseTimestamp + 1;
+    proposalMap.set(lowerReqId, 'lower');
+    ws.send(JSON.stringify({
+        proposal: 1,
+        amount: stake,
+        basis: 'stake',
+        contract_type: "PUT",
+        currency: "USD",
+        duration: duration,
+        duration_unit: "t",
+        symbol: currentSymbol,
+        barrier: lowerBarrier,
+        req_id: lowerReqId
+    }));
+    
+    addLogEntry(`📤 Sent both HIGHER and LOWER proposals simultaneously`, 'system');
 }
 
 function handleProposalResponse(proposal, direction) {
-    if (proposal && proposal.id) {
-        if (!direction) {
-            if (proposal.contract_type === 'CALL') {
-                direction = 'higher';
-            } else if (proposal.contract_type === 'PUT') {
-                direction = 'lower';
-            }
+    if (!direction) {
+        addLogEntry(`❌ Cannot determine direction for proposal`, 'system');
+        activeProposalCount--;
+        if (activeProposalCount === 0) {
+            tradingLock = false;
+            setTimeout(() => placeHedgeTrade(), 2000);
         }
-        
+        return;
+    }
+    
+    if (proposal && proposal.id) {
         const payout = parseFloat(proposal.payout);
         const stake = parseFloat(stakeInput.value);
         const profitPotential = payout - stake;
         const profitPercent = (profitPotential / stake) * 100;
         
-        addLogEntry(`📝 ${direction?.toUpperCase() || 'UNKNOWN'} Proposal: ${proposal.contract_type || 'Contract'} | Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
+        addLogEntry(`📝 ${direction.toUpperCase()} Proposal: Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
         
         const minPayout = TRADING_CONFIG.minPayout;
         if (profitPotential >= minPayout) {
-            addLogEntry(`✅ ${direction?.toUpperCase() || ''} proposal accepted - purchasing contract...`, 'success');
+            addLogEntry(`✅ ${direction.toUpperCase()} proposal accepted - purchasing contract...`, 'success');
+            pendingProposals[direction] = proposal;
+            
             ws.send(JSON.stringify({
                 buy: proposal.id,
                 price: proposal.ask_price,
                 req_id: Date.now()
             }));
         } else {
-            addLogEntry(`⚠️ ${direction?.toUpperCase() || ''} proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
+            addLogEntry(`⚠️ ${direction.toUpperCase()} proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
             activeProposalCount--;
             if (activeProposalCount === 0) {
+                addLogEntry(`❌ Both proposals rejected. Retrying...`, 'system');
                 tradingLock = false;
                 setTimeout(() => placeHedgeTrade(), 2000);
             }
         }
     } else if (proposal && proposal.error) {
-        addLogEntry(`❌ Proposal error: ${proposal.error.message}`, 'system');
+        addLogEntry(`❌ ${direction.toUpperCase()} proposal error: ${proposal.error.message}`, 'system');
         activeProposalCount--;
         if (activeProposalCount === 0) {
             tradingLock = false;
@@ -587,6 +577,7 @@ function handleProposalResponse(proposal, direction) {
 function handleBuyResponse(buy) {
     const direction = buy.contract_type === 'CALL' ? 'higher' : 'lower';
     
+    // Only accept if this direction doesn't already have a contract
     if (currentPositions[direction]) {
         addLogEntry(`⚠️ ${direction.toUpperCase()} contract already exists. Skipping duplicate.`, 'system');
         activeProposalCount--;
@@ -600,20 +591,21 @@ function handleBuyResponse(buy) {
         duration: buy.duration,
         buyTimestamp: Date.now(),
         contractType: buy.contract_type,
-        ticksElapsed: 0,
-        currentValue: buy.buy_price,
         profit: 0,
         profitPercent: 0
     };
     
     addLogEntry(`✅ ${direction.toUpperCase()} contract purchased! ID: ${buy.contract_id} | Price: $${buy.buy_price}`, 'success');
     
-    // Update barrier display
+    // Update display
     const barrierEl = document.getElementById(`${direction}-barrier`);
     if (barrierEl) barrierEl.textContent = buy.barrier;
     
     const entryEl = document.getElementById(`${direction}-entry`);
     if (entryEl) entryEl.textContent = `$${buy.buy_price}`;
+    
+    const currentEl = document.getElementById(`${direction}-current`);
+    if (currentEl) currentEl.textContent = `$${buy.buy_price}`;
     
     if (closeHigherBtn) closeHigherBtn.disabled = false;
     if (closeLowerBtn) closeLowerBtn.disabled = false;
@@ -627,6 +619,11 @@ function handleBuyResponse(buy) {
     
     contractSubscriptionIds.push(buy.contract_id);
     activeProposalCount--;
+    
+    // Check if both contracts are now purchased
+    if (currentPositions.higher && currentPositions.lower) {
+        addLogEntry(`🎉 Both HIGHER and LOWER contracts are now active!`, 'success');
+    }
 }
 
 function updateContractValue(contract) {
@@ -640,25 +637,23 @@ function updateContractValue(contract) {
     }
     
     const buyPrice = currentPositions[direction]?.entryPrice || contract.buy_price || 0;
-    let currentValue, profit;
+    let profit;
 
     if (contract.profit !== undefined && contract.profit !== null) {
         profit = parseFloat(contract.profit);
-        currentValue = buyPrice + profit;
     } else if (contract.sell_price !== undefined && contract.sell_price !== null) {
-        currentValue = parseFloat(contract.sell_price);
-        profit = currentValue - buyPrice;
+        profit = parseFloat(contract.sell_price) - buyPrice;
     } else {
-        currentValue = buyPrice;
         profit = 0;
     }
 
     const profitPercent = buyPrice > 0 ? (profit / buyPrice) * 100 : 0;
+    const currentValue = buyPrice + profit;
     
     if (currentPositions[direction]) {
-        currentPositions[direction].currentValue = currentValue;
         currentPositions[direction].profit = profit;
         currentPositions[direction].profitPercent = profitPercent;
+        currentPositions[direction].currentValue = currentValue;
     }
     
     updatePositionDisplay(direction, currentValue, profit, profitPercent);
@@ -671,11 +666,10 @@ function updatePositionDisplay(direction, value, profit, profitPercent) {
     
     if (currentEl) {
         currentEl.textContent = `$${value.toFixed(2)}`;
-        currentEl.className = profit >= 0 ? 'profit' : 'loss';
     }
     if (pnlEl) {
         pnlEl.textContent = `${profit >= 0 ? '+' : ''}$${profit.toFixed(2)} (${profitPercent.toFixed(1)}%)`;
-        pnlEl.className = profit >= 0 ? 'profit' : 'loss';
+        pnlEl.style.color = profit >= 0 ? '#00ff88' : '#ff4444';
     }
 }
 
@@ -687,7 +681,7 @@ function updateCombinedValues() {
     const netProfitEl = document.getElementById('net-profit');
     if (netProfitEl) {
         netProfitEl.textContent = `${netProfit >= 0 ? '+' : ''}$${netProfit.toFixed(2)}`;
-        netProfitEl.className = netProfit >= 0 ? 'profit' : 'loss';
+        netProfitEl.style.color = netProfit >= 0 ? '#00ff88' : '#ff4444';
     }
 }
 
@@ -709,6 +703,8 @@ async function closeContract(direction, isEmergency = false) {
 }
 
 async function closeBothContracts() {
+    addLogEntry(`🔒 Closing both contracts...`, 'system');
+    
     if (currentPositions.higher && currentPositions.higher.id) {
         await closeContract('higher');
     }
@@ -760,7 +756,7 @@ function updateStatsDisplay() {
     if (winCountEl) winCountEl.textContent = sessionStats.wins;
     if (totalProfitEl) {
         totalProfitEl.textContent = `$${sessionStats.totalProfit.toFixed(2)}`;
-        totalProfitEl.className = sessionStats.totalProfit >= 0 ? 'profit' : 'loss';
+        totalProfitEl.style.color = sessionStats.totalProfit >= 0 ? '#00ff88' : '#ff4444';
     }
 }
 
