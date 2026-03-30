@@ -1,5 +1,6 @@
 // ============================================
 // SIMPLE HEDGE BOT - PLACES BOTH HIGHER & LOWER
+// FIXED: Connect button working
 // ============================================
 
 // State
@@ -13,23 +14,15 @@ let pendingProposals = { higher: false, lower: false };
 let sessionStats = { cycles: 0, wins: 0, totalProfit: 0 };
 
 // DOM Elements
-const connectBtn = document.getElementById('connect-btn');
-const startBtn = document.getElementById('start-btn');
-const stopBtn = document.getElementById('stop-btn');
-const emergencyBtn = document.getElementById('emergency-btn');
-const demoSwitch = document.getElementById('demo-switch');
-const realSwitch = document.getElementById('real-switch');
-const marketSelect = document.getElementById('market');
-const stakeInput = document.getElementById('stake');
-const durationInput = document.getElementById('duration');
-const offsetInput = document.getElementById('offset');
-const closeHigherBtn = document.getElementById('close-higher');
-const closeLowerBtn = document.getElementById('close-lower');
-const closeBothBtn = document.getElementById('close-both');
-const logDiv = document.getElementById('log');
+let connectBtn, startBtn, stopBtn, emergencyBtn, demoSwitch, realSwitch;
+let marketSelect, stakeInput, durationInput, offsetInput;
+let closeHigherBtn, closeLowerBtn, closeBothBtn;
+let logDiv, tokenInput;
 
 // Helper: Add log entry
 function addLog(msg, type = 'info') {
+    const logDiv = document.getElementById('log');
+    if (!logDiv) return;
     const entry = document.createElement('div');
     entry.className = `log-entry ${type}`;
     entry.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}`;
@@ -39,49 +32,71 @@ function addLog(msg, type = 'info') {
 
 // Update displays
 function updateBalance(balance) {
-    document.getElementById('balance-display').innerHTML = `Balance: $${parseFloat(balance).toFixed(2)}`;
+    const balanceDiv = document.getElementById('balance-display');
+    if (balanceDiv) balanceDiv.innerHTML = `Balance: $${parseFloat(balance).toFixed(2)}`;
 }
 
 function updatePrice(price) {
-    document.getElementById('price-display').innerHTML = `Price: $${price.toFixed(2)}`;
+    const priceDiv = document.getElementById('price-display');
+    if (priceDiv) priceDiv.innerHTML = `Price: $${price.toFixed(2)}`;
     currentPrice = price;
 }
 
 function updateStats() {
     const winRate = sessionStats.cycles > 0 ? (sessionStats.wins / sessionStats.cycles * 100).toFixed(1) : 0;
-    document.getElementById('cycle-count').innerHTML = sessionStats.cycles;
-    document.getElementById('win-count').innerHTML = `${sessionStats.wins} (${winRate}%)`;
-    document.getElementById('total-profit').innerHTML = `$${sessionStats.totalProfit.toFixed(2)}`;
+    const cycleEl = document.getElementById('cycle-count');
+    const winEl = document.getElementById('win-count');
+    const totalEl = document.getElementById('total-profit');
+    if (cycleEl) cycleEl.innerHTML = sessionStats.cycles;
+    if (winEl) winEl.innerHTML = `${sessionStats.wins} (${winRate}%)`;
+    if (totalEl) totalEl.innerHTML = `$${sessionStats.totalProfit.toFixed(2)}`;
 }
 
 function updateNetProfit() {
     const higherProfit = currentPositions.higher?.profit || 0;
     const lowerProfit = currentPositions.lower?.profit || 0;
     const net = higherProfit + lowerProfit;
-    document.getElementById('net-profit').innerHTML = `$${net.toFixed(2)}`;
-    document.getElementById('net-profit').style.color = net >= 0 ? '#00ff88' : '#ff4444';
+    const netEl = document.getElementById('net-profit');
+    if (netEl) {
+        netEl.innerHTML = `$${net.toFixed(2)}`;
+        netEl.style.color = net >= 0 ? '#00ff88' : '#ff4444';
+    }
     return net;
 }
 
 function updatePositionUI(direction, position) {
-    document.getElementById(`${direction}-barrier`).innerHTML = position.barrier || '-';
-    document.getElementById(`${direction}-entry`).innerHTML = position.entryPrice ? `$${position.entryPrice.toFixed(2)}` : '-';
-    document.getElementById(`${direction}-current`).innerHTML = position.currentValue ? `$${position.currentValue.toFixed(2)}` : '-';
+    const barrierEl = document.getElementById(`${direction}-barrier`);
+    const entryEl = document.getElementById(`${direction}-entry`);
+    const currentEl = document.getElementById(`${direction}-current`);
     const pnlSpan = document.getElementById(`${direction}-pnl`);
-    pnlSpan.innerHTML = position.profit ? `${position.profit >= 0 ? '+' : ''}$${position.profit.toFixed(2)}` : '-';
-    pnlSpan.style.color = position.profit >= 0 ? '#00ff88' : '#ff4444';
+    
+    if (barrierEl) barrierEl.innerHTML = position.barrier || '-';
+    if (entryEl) entryEl.innerHTML = position.entryPrice ? `$${position.entryPrice.toFixed(2)}` : '-';
+    if (currentEl) currentEl.innerHTML = position.currentValue ? `$${position.currentValue.toFixed(2)}` : '-';
+    if (pnlSpan) {
+        pnlSpan.innerHTML = position.profit ? `${position.profit >= 0 ? '+' : ''}$${position.profit.toFixed(2)}` : '-';
+        pnlSpan.style.color = position.profit >= 0 ? '#00ff88' : '#ff4444';
+    }
 }
 
 function resetPositionUI(direction) {
-    document.getElementById(`${direction}-barrier`).innerHTML = '-';
-    document.getElementById(`${direction}-entry`).innerHTML = '-';
-    document.getElementById(`${direction}-current`).innerHTML = '-';
-    document.getElementById(`${direction}-pnl`).innerHTML = '-';
+    const barrierEl = document.getElementById(`${direction}-barrier`);
+    const entryEl = document.getElementById(`${direction}-entry`);
+    const currentEl = document.getElementById(`${direction}-current`);
+    const pnlSpan = document.getElementById(`${direction}-pnl`);
+    if (barrierEl) barrierEl.innerHTML = '-';
+    if (entryEl) entryEl.innerHTML = '-';
+    if (currentEl) currentEl.innerHTML = '-';
+    if (pnlSpan) pnlSpan.innerHTML = '-';
 }
 
 // WebSocket connection
-function connect(token) {
-    if (ws) ws.close();
+function connectWebSocket(token) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+    }
+    
+    addLog('Connecting to Deriv...');
     ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
     
     ws.onopen = () => {
@@ -94,16 +109,19 @@ function connect(token) {
             const data = JSON.parse(e.data);
             handleMessage(data);
         } catch(err) {
-            console.error(err);
+            console.error('Parse error:', err);
         }
     };
     
-    ws.onerror = () => addLog('WebSocket error', 'error');
+    ws.onerror = () => {
+        addLog('WebSocket error', 'error');
+    };
     
     ws.onclose = () => {
-        addLog('Disconnected', 'error');
+        addLog('Disconnected from Deriv', 'error');
         isConnected = false;
-        document.getElementById('connection-status').classList.remove('connected');
+        const statusDiv = document.getElementById('connection-status');
+        if (statusDiv) statusDiv.classList.remove('connected');
         enableControls(false);
     };
 }
@@ -114,7 +132,8 @@ function handleMessage(data) {
         if (data.error.code === 'InvalidToken') {
             localStorage.removeItem('deriv_token');
             isConnected = false;
-            document.getElementById('connection-status').classList.remove('connected');
+            const statusDiv = document.getElementById('connection-status');
+            if (statusDiv) statusDiv.classList.remove('connected');
         }
         return;
     }
@@ -122,24 +141,30 @@ function handleMessage(data) {
     // Auth response
     if (data.authorize) {
         isConnected = true;
-        document.getElementById('connection-status').classList.add('connected');
-        document.getElementById('connection-status').querySelector('span:last-child').innerHTML = 'Connected';
+        const statusDiv = document.getElementById('connection-status');
+        if (statusDiv) {
+            statusDiv.classList.add('connected');
+            const span = statusDiv.querySelector('span:last-child');
+            if (span) span.innerHTML = 'Connected';
+        }
         updateBalance(data.authorize.balance);
         addLog(`✅ Authorized: ${data.authorize.email || data.authorize.loginid}`, 'success');
         
         // Show account buttons
-        document.getElementById('account-buttons').style.display = 'flex';
+        const accountBtns = document.getElementById('account-buttons');
+        if (accountBtns) accountBtns.style.display = 'flex';
+        
         const isDemo = data.authorize.loginid?.startsWith('VRTC');
         if (isDemo) {
-            demoSwitch.classList.add('active');
-            realSwitch.classList.remove('active');
+            if (demoSwitch) demoSwitch.classList.add('active');
+            if (realSwitch) realSwitch.classList.remove('active');
         } else {
-            realSwitch.classList.add('active');
-            demoSwitch.classList.remove('active');
+            if (realSwitch) realSwitch.classList.add('active');
+            if (demoSwitch) demoSwitch.classList.remove('active');
         }
         
         enableControls(true);
-        startBtn.disabled = false;
+        if (startBtn) startBtn.disabled = false;
         
         // Subscribe to ticks
         ws.send(JSON.stringify({ ticks: currentSymbol, subscribe: 1, req_id: 2 }));
@@ -284,7 +309,8 @@ function handleBuy(buy) {
     
     // Update UI
     updatePositionUI(direction, currentPositions[direction]);
-    document.getElementById(`${direction}-card`).style.borderLeftColor = '#00ff88';
+    const card = document.getElementById(`${direction}-card`);
+    if (card) card.style.borderLeftColor = '#00ff88';
     
     // Subscribe to contract updates
     ws.send(JSON.stringify({
@@ -295,9 +321,9 @@ function handleBuy(buy) {
     
     // Enable buttons if both positions exist
     if (currentPositions.higher && currentPositions.lower) {
-        closeHigherBtn.disabled = false;
-        closeLowerBtn.disabled = false;
-        closeBothBtn.disabled = false;
+        if (closeHigherBtn) closeHigherBtn.disabled = false;
+        if (closeLowerBtn) closeLowerBtn.disabled = false;
+        if (closeBothBtn) closeBothBtn.disabled = false;
         addLog(`🎯 BOTH POSITIONS ACTIVE! Monitoring...`, 'success');
     }
 }
@@ -319,23 +345,17 @@ function handleContractUpdate(contract) {
     pos.currentValue = currentValue;
     pos.profit = profit;
     
-    // Calculate ticks left
-    let ticksLeft = 0;
-    if (contract.date_expiry) {
-        ticksLeft = Math.max(0, contract.date_expiry - Math.floor(Date.now() / 1000));
-    }
-    const ticksElapsed = pos.duration - ticksLeft;
-    
     // Update UI
     updatePositionUI(direction, pos);
     
     // Show glow effect
     const card = document.getElementById(`${direction}-card`);
-    if (profit > (pos.prevProfit || 0)) {
-        card.style.borderLeftColor = '#00ff88';
-        card.style.transition = 'border-left-color 0.2s';
-    } else if (profit < (pos.prevProfit || 0)) {
-        card.style.borderLeftColor = '#ff4444';
+    if (card) {
+        if (profit > (pos.prevProfit || 0)) {
+            card.style.borderLeftColor = '#00ff88';
+        } else if (profit < (pos.prevProfit || 0)) {
+            card.style.borderLeftColor = '#ff4444';
+        }
     }
     pos.prevProfit = profit;
     
@@ -348,7 +368,7 @@ function handleContractUpdate(contract) {
         
         currentPositions[direction] = null;
         resetPositionUI(direction);
-        document.getElementById(`${direction}-card`).style.borderLeftColor = '#444';
+        if (card) card.style.borderLeftColor = '#444';
         
         // If both closed, complete cycle
         if (!currentPositions.higher && !currentPositions.lower) {
@@ -363,9 +383,9 @@ function handleContractUpdate(contract) {
             addLog(`📈 Total Profit: $${sessionStats.totalProfit.toFixed(2)}`, 'success');
             addLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
             
-            closeHigherBtn.disabled = true;
-            closeLowerBtn.disabled = true;
-            closeBothBtn.disabled = true;
+            if (closeHigherBtn) closeHigherBtn.disabled = true;
+            if (closeLowerBtn) closeLowerBtn.disabled = true;
+            if (closeBothBtn) closeBothBtn.disabled = true;
             
             if (isBotRunning) {
                 addLog(`🔄 Next cycle in 3 seconds...`);
@@ -405,9 +425,9 @@ function startBot() {
     }
     
     isBotRunning = true;
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
-    emergencyBtn.disabled = false;
+    if (startBtn) startBtn.disabled = true;
+    if (stopBtn) stopBtn.disabled = false;
+    if (emergencyBtn) emergencyBtn.disabled = false;
     
     addLog(`🚀 HEDGE BOT STARTED on ${marketSelect.value}`, 'success');
     addLog(`💡 Settings: $${stakeInput.value} each | ${durationInput.value} ticks | offset ${offsetInput.value}`);
@@ -417,8 +437,8 @@ function startBot() {
 
 function stopBot() {
     isBotRunning = false;
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
     addLog(`🛑 Bot stopped`, 'error');
 }
 
@@ -427,8 +447,8 @@ function emergencyStop() {
     isBotRunning = false;
     if (currentPositions.higher) closeContract('higher');
     if (currentPositions.lower) closeContract('lower');
-    startBtn.disabled = false;
-    stopBtn.disabled = true;
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
 }
 
 // Account switching
@@ -439,14 +459,14 @@ function switchAccount(type) {
 }
 
 function enableControls(enabled) {
-    marketSelect.disabled = !enabled;
-    stakeInput.disabled = !enabled;
-    durationInput.disabled = !enabled;
-    offsetInput.disabled = !enabled;
+    if (marketSelect) marketSelect.disabled = !enabled;
+    if (stakeInput) stakeInput.disabled = !enabled;
+    if (durationInput) durationInput.disabled = !enabled;
+    if (offsetInput) offsetInput.disabled = !enabled;
     if (!enabled) {
-        startBtn.disabled = true;
-        stopBtn.disabled = true;
-        emergencyBtn.disabled = true;
+        if (startBtn) startBtn.disabled = true;
+        if (stopBtn) stopBtn.disabled = true;
+        if (emergencyBtn) emergencyBtn.disabled = true;
     }
 }
 
@@ -459,33 +479,56 @@ function onMarketChange() {
     }
 }
 
-// Event listeners
-connectBtn.onclick = () => {
-    const token = document.getElementById('token').value.trim();
-    if (!token) {
-        addLog('Enter your API token', 'error');
-        return;
+// ===== INITIALIZATION =====
+// Wait for DOM to be fully loaded before attaching events
+document.addEventListener('DOMContentLoaded', () => {
+    // Get all DOM elements
+    connectBtn = document.getElementById('connect-btn');
+    startBtn = document.getElementById('start-btn');
+    stopBtn = document.getElementById('stop-btn');
+    emergencyBtn = document.getElementById('emergency-btn');
+    demoSwitch = document.getElementById('demo-switch');
+    realSwitch = document.getElementById('real-switch');
+    marketSelect = document.getElementById('market');
+    stakeInput = document.getElementById('stake');
+    durationInput = document.getElementById('duration');
+    offsetInput = document.getElementById('offset');
+    closeHigherBtn = document.getElementById('close-higher');
+    closeLowerBtn = document.getElementById('close-lower');
+    closeBothBtn = document.getElementById('close-both');
+    tokenInput = document.getElementById('token');
+    
+    // Attach event listeners
+    if (connectBtn) {
+        connectBtn.addEventListener('click', () => {
+            const token = tokenInput ? tokenInput.value.trim() : '';
+            if (!token) {
+                addLog('❌ Please enter your API token', 'error');
+                return;
+            }
+            addLog('🔌 Connecting to Deriv...', 'info');
+            localStorage.setItem('deriv_token', token);
+            connectWebSocket(token);
+        });
     }
-    localStorage.setItem('deriv_token', token);
-    connect(token);
-};
-
-startBtn.onclick = startBot;
-stopBtn.onclick = stopBot;
-emergencyBtn.onclick = emergencyStop;
-demoSwitch.onclick = () => switchAccount('demo');
-realSwitch.onclick = () => switchAccount('real');
-marketSelect.onchange = onMarketChange;
-closeHigherBtn.onclick = () => closeContract('higher');
-closeLowerBtn.onclick = () => closeContract('lower');
-closeBothBtn.onclick = closeBoth;
-
-// Load saved token
-window.onload = () => {
-    const saved = localStorage.getItem('deriv_token');
-    if (saved) {
-        document.getElementById('token').value = saved;
-        connect(saved);
+    
+    if (startBtn) startBtn.addEventListener('click', startBot);
+    if (stopBtn) stopBtn.addEventListener('click', stopBot);
+    if (emergencyBtn) emergencyBtn.addEventListener('click', emergencyStop);
+    if (demoSwitch) demoSwitch.addEventListener('click', () => switchAccount('demo'));
+    if (realSwitch) realSwitch.addEventListener('click', () => switchAccount('real'));
+    if (marketSelect) marketSelect.addEventListener('change', onMarketChange);
+    if (closeHigherBtn) closeHigherBtn.addEventListener('click', () => closeContract('higher'));
+    if (closeLowerBtn) closeLowerBtn.addEventListener('click', () => closeContract('lower'));
+    if (closeBothBtn) closeBothBtn.addEventListener('click', closeBoth);
+    
+    // Load saved token
+    const savedToken = localStorage.getItem('deriv_token');
+    if (savedToken && tokenInput) {
+        tokenInput.value = savedToken;
+        addLog('Found saved token, connecting...');
+        connectWebSocket(savedToken);
+    } else {
+        addLog('🛡️ Hedge Bot v2.0 Ready - Enter your API token and click Connect');
     }
-    addLog('Hedge Bot v2.0 Ready - Connect your token');
-};
+});
