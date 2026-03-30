@@ -1,561 +1,466 @@
-// ============================================
-// DERIV HEDGE BOT - PROPER PARALLEL TRADES
-// FIXED: Both trades placed, correct P&L, working close buttons
-// ============================================
+// ================================
+// DERIV HEDGE BOT - PROFESSIONAL
+// ================================
 
-// State
+// ---------- CONFIG ----------
+const APP_ID = 84911;
+const WS_URL = `wss://ws.derivws.com/websockets/v3?app_id=${APP_ID}`;
+
+const CONFIG = {
+    defaultStake: 1,
+    defaultDuration: 5,
+    barrierOffset: 14.9962,
+    minProfitAccept: 2.3
+};
+
+// ---------- STATE ----------
 let ws = null;
-let isBotRunning = false;
 let isConnected = false;
+let isBotRunning = false;
 let currentPrice = null;
-let currentSymbol = 'R_75';
-let currentPositions = { 
-    higher: null, 
-    lower: null 
+
+let tradingLock = false;
+
+let currentPositions = {
+    higher: null,
+    lower: null
 };
-let sessionStats = { 
-    cycles: 0, 
-    wins: 0, 
-    totalProfit: 0 
+
+let proposalMap = new Map();
+
+let sessionStats = {
+    totalTrades: 0,
+    wins: 0,
+    pnl: 0
 };
-let lastContractUpdate = {};
 
-// DOM Elements
-let connectBtn, startBtn, stopBtn, emergencyBtn, demoSwitch, realSwitch;
-let marketSelect, stakeInput, durationInput, offsetInput;
-let closeHigherBtn, closeLowerBtn, closeBothBtn;
-let logDiv, tokenInput;
+// ---------- DOM ----------
+const apiTokenInput = document.getElementById("api-token");
+const connectBtn = document.getElementById("connect-token-btn");
 
-// Helper: Add log entry
-function addLog(msg, type = 'info') {
-    const logDiv = document.getElementById('log');
-    if (!logDiv) return;
-    const entry = document.createElement('div');
-    entry.className = `log-entry ${type}`;
-    entry.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    logDiv.insertBefore(entry, logDiv.firstChild);
-    while (logDiv.children.length > 150) logDiv.removeChild(logDiv.lastChild);
+const startBtn = document.getElementById("start-bot");
+const stopBtn = document.getElementById("stop-bot");
+
+const closeHigherBtn = document.getElementById("close-higher");
+const closeLowerBtn = document.getElementById("close-lower");
+const closeBothBtn = document.getElementById("close-both");
+
+const stakeInput = document.getElementById("stake");
+const durationInput = document.getElementById("duration");
+const offsetInput = document.getElementById("offset");
+
+const priceEl = document.getElementById("current-price");
+
+const higherValueEl = document.getElementById("higher-value");
+const lowerValueEl = document.getElementById("lower-value");
+
+const higherPnlEl = document.getElementById("higher-pnl");
+const lowerPnlEl = document.getElementById("lower-pnl");
+
+const combinedValueEl = document.getElementById("combined-value");
+const netProfitEl = document.getElementById("net-profit");
+
+
+// ---------- INIT ----------
+window.addEventListener("load", () => {
+
+    stakeInput.value = CONFIG.defaultStake;
+    durationInput.value = CONFIG.defaultDuration;
+    offsetInput.value = CONFIG.barrierOffset;
+
+});
+
+
+// ---------- LOG ----------
+function log(msg){
+    console.log(`[BOT] ${msg}`);
 }
 
-// Update displays
-function updateBalance(balance) {
-    const balanceDiv = document.getElementById('balance-display');
-    if (balanceDiv) balanceDiv.innerHTML = `Balance: $${parseFloat(balance).toFixed(2)}`;
-}
 
-function updatePrice(price) {
-    const priceDiv = document.getElementById('price-display');
-    if (priceDiv) priceDiv.innerHTML = `Price: $${price.toFixed(2)}`;
-    currentPrice = price;
-}
+// ---------- CONNECT ----------
+function connect(){
 
-function updateStats() {
-    const winRate = sessionStats.cycles > 0 ? (sessionStats.wins / sessionStats.cycles * 100).toFixed(1) : 0;
-    const cycleEl = document.getElementById('cycle-count');
-    const winEl = document.getElementById('win-count');
-    const totalEl = document.getElementById('total-profit');
-    if (cycleEl) cycleEl.innerHTML = sessionStats.cycles;
-    if (winEl) winEl.innerHTML = `${sessionStats.wins} (${winRate}%)`;
-    if (totalEl) totalEl.innerHTML = `$${sessionStats.totalProfit.toFixed(2)}`;
-    totalEl.style.color = sessionStats.totalProfit >= 0 ? '#00ff88' : '#ff4444';
-}
+    const token = apiTokenInput.value.trim();
 
-function updateNetProfit() {
-    const higherProfit = currentPositions.higher?.profit || 0;
-    const lowerProfit = currentPositions.lower?.profit || 0;
-    const net = higherProfit + lowerProfit;
-    const netEl = document.getElementById('net-profit');
-    if (netEl) {
-        netEl.innerHTML = `$${net.toFixed(2)}`;
-        netEl.style.color = net >= 0 ? '#00ff88' : '#ff4444';
-    }
-    return net;
-}
-
-function updatePositionUI(direction) {
-    const pos = currentPositions[direction];
-    const barrierEl = document.getElementById(`${direction}-barrier`);
-    const entryEl = document.getElementById(`${direction}-entry`);
-    const currentEl = document.getElementById(`${direction}-current`);
-    const pnlSpan = document.getElementById(`${direction}-pnl`);
-    
-    if (pos) {
-        if (barrierEl) barrierEl.innerHTML = pos.barrier || '-';
-        if (entryEl) entryEl.innerHTML = pos.entryPrice ? `$${pos.entryPrice.toFixed(2)}` : '-';
-        if (currentEl) currentEl.innerHTML = pos.currentValue ? `$${pos.currentValue.toFixed(2)}` : '-';
-        if (pnlSpan) {
-            const profit = pos.profit || 0;
-            pnlSpan.innerHTML = `${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}`;
-            pnlSpan.style.color = profit >= 0 ? '#00ff88' : '#ff4444';
-        }
-    } else {
-        if (barrierEl) barrierEl.innerHTML = '-';
-        if (entryEl) entryEl.innerHTML = '-';
-        if (currentEl) currentEl.innerHTML = '-';
-        if (pnlSpan) {
-            pnlSpan.innerHTML = '-';
-            pnlSpan.style.color = '#888';
-        }
-    }
-}
-
-function resetPositionUI(direction) {
-    const barrierEl = document.getElementById(`${direction}-barrier`);
-    const entryEl = document.getElementById(`${direction}-entry`);
-    const currentEl = document.getElementById(`${direction}-current`);
-    const pnlSpan = document.getElementById(`${direction}-pnl`);
-    if (barrierEl) barrierEl.innerHTML = '-';
-    if (entryEl) entryEl.innerHTML = '-';
-    if (currentEl) currentEl.innerHTML = '-';
-    if (pnlSpan) {
-        pnlSpan.innerHTML = '-';
-        pnlSpan.style.color = '#888';
-    }
-}
-
-// WebSocket connection
-function connectWebSocket(token) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.close();
-    }
-    
-    addLog('Connecting to Deriv...');
-    ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
-    
-    ws.onopen = () => {
-        addLog('WebSocket connected, authorizing...');
-        ws.send(JSON.stringify({ authorize: token, req_id: 1 }));
-    };
-    
-    ws.onmessage = (e) => {
-        try {
-            const data = JSON.parse(e.data);
-            handleMessage(data);
-        } catch(err) {
-            console.error('Parse error:', err);
-        }
-    };
-    
-    ws.onerror = () => {
-        addLog('WebSocket error', 'error');
-    };
-    
-    ws.onclose = () => {
-        addLog('Disconnected from Deriv', 'error');
-        isConnected = false;
-        const statusDiv = document.getElementById('connection-status');
-        if (statusDiv) statusDiv.classList.remove('connected');
-        enableControls(false);
-    };
-}
-
-function handleMessage(data) {
-    if (data.error) {
-        addLog(`Error: ${data.error.message}`, 'error');
-        if (data.error.code === 'InvalidToken') {
-            localStorage.removeItem('deriv_token');
-            isConnected = false;
-            const statusDiv = document.getElementById('connection-status');
-            if (statusDiv) statusDiv.classList.remove('connected');
-        }
+    if(!token){
+        alert("Enter API Token");
         return;
     }
-    
-    // Auth response
-    if (data.authorize) {
+
+    ws = new WebSocket(WS_URL);
+
+    ws.onopen = () => {
+
+        log("WebSocket connected");
+
+        ws.send(JSON.stringify({
+            authorize: token
+        }));
+
+    };
+
+    ws.onmessage = (msg)=>{
+        const data = JSON.parse(msg.data);
+        handleMessage(data);
+    };
+
+    ws.onerror = ()=>{
+        log("WebSocket error");
+    };
+
+    ws.onclose = ()=>{
+        isConnected = false;
+        log("Disconnected");
+    };
+
+}
+
+
+// ---------- HANDLE MESSAGE ----------
+function handleMessage(data){
+
+    if(data.error){
+        log("Error: " + data.error.message);
+        return;
+    }
+
+    if(data.authorize){
+
         isConnected = true;
-        const statusDiv = document.getElementById('connection-status');
-        if (statusDiv) {
-            statusDiv.classList.add('connected');
-            const span = statusDiv.querySelector('span:last-child');
-            if (span) span.innerHTML = 'Connected';
-        }
-        updateBalance(data.authorize.balance);
-        addLog(`✅ Authorized: ${data.authorize.email || data.authorize.loginid}`, 'success');
-        
-        // Show account buttons
-        const accountBtns = document.getElementById('account-buttons');
-        if (accountBtns) accountBtns.style.display = 'flex';
-        
-        const isDemo = data.authorize.loginid?.startsWith('VRTC');
-        if (isDemo) {
-            if (demoSwitch) demoSwitch.classList.add('active');
-            if (realSwitch) realSwitch.classList.remove('active');
-        } else {
-            if (realSwitch) realSwitch.classList.add('active');
-            if (demoSwitch) demoSwitch.classList.remove('active');
-        }
-        
-        enableControls(true);
-        if (startBtn) startBtn.disabled = false;
-        
-        // Subscribe to ticks
-        ws.send(JSON.stringify({ ticks: currentSymbol, subscribe: 1, req_id: 2 }));
-        ws.send(JSON.stringify({ balance: 1, req_id: 3 }));
+
+        log("Authorized");
+
+        subscribeTicks();
+
     }
-    
-    // Tick response
-    if (data.tick && data.tick.quote) {
-        updatePrice(data.tick.quote);
+
+    if(data.tick){
+        handleTick(data.tick);
     }
-    
-    // Balance update
-    if (data.balance) {
-        updateBalance(data.balance.balance);
+
+    if(data.proposal){
+        handleProposal(data);
     }
-    
-    // Proposal response
-    if (data.proposal) {
-        handleProposal(data.proposal);
-    }
-    
-    // Buy response
-    if (data.buy) {
+
+    if(data.buy){
         handleBuy(data.buy);
     }
-    
-    // Contract update (this is where we get current value and profit)
-    if (data.proposal_open_contract) {
-        handleContractUpdate(data.proposal_open_contract);
+
+    if(data.proposal_open_contract){
+        updateContract(data.proposal_open_contract);
     }
+
+    if(data.sell){
+        log("Contract sold");
+    }
+
 }
 
-// Place both trades
-function placeBothTrades() {
-    if (!isBotRunning) {
-        addLog('Bot not running', 'error');
+
+// ---------- TICKS ----------
+function subscribeTicks(){
+
+    ws.send(JSON.stringify({
+        ticks: "R_75",
+        subscribe: 1
+    }));
+
+}
+
+function handleTick(tick){
+
+    currentPrice = tick.quote;
+
+    priceEl.textContent = "$" + currentPrice.toFixed(2);
+
+}
+
+
+// ---------- START BOT ----------
+async function startBot(){
+
+    if(!isConnected){
+        alert("Connect first");
         return;
     }
-    if (currentPositions.higher || currentPositions.lower) {
-        addLog('Positions already active, waiting for them to close...');
+
+    if(!currentPrice){
+        alert("Waiting price feed");
         return;
     }
-    if (!currentPrice) {
-        addLog('Waiting for price feed...');
-        setTimeout(placeBothTrades, 1000);
-        return;
-    }
-    
+
+    isBotRunning = true;
+
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    log("Bot started");
+
+    placeHedge();
+
+}
+
+
+// ---------- STOP ----------
+function stopBot(){
+
+    isBotRunning = false;
+
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+
+    tradingLock = false;
+
+    log("Bot stopped");
+
+}
+
+
+// ---------- PLACE HEDGE ----------
+function placeHedge(){
+
+    if(!isBotRunning) return;
+
+    if(tradingLock) return;
+
+    tradingLock = true;
+
     const stake = parseFloat(stakeInput.value);
     const duration = parseInt(durationInput.value);
     const offset = parseFloat(offsetInput.value);
-    const higherBarrier = `+${offset.toFixed(4)}`;
-    const lowerBarrier = `-${offset.toFixed(4)}`;
-    
-    addLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    addLog(`🎯 Placing PARALLEL trades at ${currentPrice.toFixed(2)}`);
-    addLog(`📈 HIGHER (CALL) - Barrier: ${higherBarrier}`);
-    addLog(`📉 LOWER (PUT) - Barrier: ${lowerBarrier}`);
-    addLog(`⏱️ Duration: ${duration} ticks | 💰 Stake: $${stake} each`);
-    addLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    
-    // Send HIGHER proposal
-    const higherReqId = Date.now();
-    addLog(`📤 Sending HIGHER proposal...`);
-    ws.send(JSON.stringify({
-        proposal: 1,
-        amount: stake,
-        basis: 'stake',
-        contract_type: "CALL",
-        currency: "USD",
-        duration: duration,
-        duration_unit: "t",
-        symbol: currentSymbol,
-        barrier: higherBarrier,
-        req_id: higherReqId
-    }));
-    
-    // Send LOWER proposal after 1 second
-    setTimeout(() => {
-        if (ws && ws.readyState === WebSocket.OPEN && isBotRunning) {
-            const lowerReqId = Date.now();
-            addLog(`📤 Sending LOWER proposal...`);
-            ws.send(JSON.stringify({
-                proposal: 1,
-                amount: stake,
-                basis: 'stake',
-                contract_type: "PUT",
-                currency: "USD",
-                duration: duration,
-                duration_unit: "t",
-                symbol: currentSymbol,
-                barrier: lowerBarrier,
-                req_id: lowerReqId
-            }));
-        }
-    }, 1000);
-}
 
-function handleProposal(proposal) {
-    const direction = proposal.contract_type === 'CALL' ? 'higher' : 'lower';
-    const stake = parseFloat(stakeInput.value);
-    const payout = parseFloat(proposal.payout);
-    const netProfit = payout - stake;
-    
-    addLog(`📝 ${direction.toUpperCase()} proposal: Payout $${payout.toFixed(2)} | Net $${netProfit.toFixed(2)}`);
-    
-    // Accept any proposal with positive net profit
-    if (netProfit > 0) {
-        addLog(`✅ ${direction.toUpperCase()} accepted - buying...`, 'success');
+    const higherBarrier = "+" + offset.toFixed(4);
+    const lowerBarrier = "-" + offset.toFixed(4);
+
+    const higherReq = Date.now();
+
+    proposalMap.set(higherReq,"higher");
+
+    ws.send(JSON.stringify({
+
+        proposal:1,
+        amount:stake,
+        basis:"stake",
+        contract_type:"CALL",
+        currency:"USD",
+        duration:duration,
+        duration_unit:"t",
+        symbol:"R_75",
+        barrier:higherBarrier,
+        req_id:higherReq
+
+    }));
+
+
+    setTimeout(()=>{
+
+        const lowerReq = Date.now();
+
+        proposalMap.set(lowerReq,"lower");
+
         ws.send(JSON.stringify({
-            buy: proposal.id,
-            price: proposal.ask_price,
-            req_id: Date.now()
+
+            proposal:1,
+            amount:stake,
+            basis:"stake",
+            contract_type:"PUT",
+            currency:"USD",
+            duration:duration,
+            duration_unit:"t",
+            symbol:"R_75",
+            barrier:lowerBarrier,
+            req_id:lowerReq
+
         }));
-    } else {
-        addLog(`❌ ${direction.toUpperCase()} rejected: Net profit too low`, 'error');
-    }
+
+    },400);
+
 }
 
-function handleBuy(buy) {
-    const direction = buy.contract_type === 'CALL' ? 'higher' : 'lower';
-    
-    currentPositions[direction] = {
-        id: buy.contract_id,
-        entryPrice: buy.buy_price,
-        barrier: buy.barrier,
-        duration: buy.duration,
-        buyTimestamp: Date.now(),
-        currentValue: buy.buy_price,
-        profit: 0
-    };
-    
-    addLog(`✅ ${direction.toUpperCase()} PURCHASED! ID: ${buy.contract_id} at $${buy.buy_price}`, 'success');
-    
-    // Update UI
-    updatePositionUI(direction);
-    const card = document.getElementById(`${direction}-card`);
-    if (card) card.style.borderLeftColor = '#00ff88';
-    
-    // Subscribe to contract updates
+
+// ---------- HANDLE PROPOSAL ----------
+function handleProposal(data){
+
+    const proposal = data.proposal;
+
+    const direction = proposalMap.get(data.req_id);
+
+    if(!direction) return;
+
+    const stake = parseFloat(stakeInput.value);
+
+    const payout = proposal.payout;
+
+    const profit = payout - stake;
+
+    if(profit < CONFIG.minProfitAccept){
+
+        log("Rejected low payout");
+
+        tradingLock = false;
+
+        setTimeout(placeHedge,1000);
+
+        return;
+
+    }
+
     ws.send(JSON.stringify({
-        proposal_open_contract: 1,
-        contract_id: buy.contract_id,
-        req_id: Date.now()
+
+        buy:proposal.id,
+        price:proposal.ask_price
+
     }));
-    
-    // Enable close buttons if both positions exist
-    if (currentPositions.higher && currentPositions.lower) {
-        if (closeHigherBtn) closeHigherBtn.disabled = false;
-        if (closeLowerBtn) closeLowerBtn.disabled = false;
-        if (closeBothBtn) closeBothBtn.disabled = false;
-        addLog(`🎯 BOTH POSITIONS ACTIVE! Monitoring P&L...`, 'success');
-    }
+
 }
 
-function handleContractUpdate(contract) {
-    // Find which position this contract belongs to
+
+// ---------- HANDLE BUY ----------
+function handleBuy(buy){
+
+    const direction = buy.contract_type === "CALL" ? "higher" : "lower";
+
+    currentPositions[direction] = {
+
+        id: buy.contract_id,
+        entry: buy.buy_price,
+        value: buy.buy_price,
+        profit:0
+
+    };
+
+    if(direction==="higher") closeHigherBtn.disabled=false;
+    if(direction==="lower") closeLowerBtn.disabled=false;
+
+    ws.send(JSON.stringify({
+
+        proposal_open_contract:1,
+        contract_id:buy.contract_id,
+        subscribe:1
+
+    }));
+
+}
+
+
+// ---------- CONTRACT UPDATE ----------
+function updateContract(contract){
+
+    const id = contract.contract_id;
+
     let direction = null;
-    if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
-        direction = 'higher';
-    } else if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
-        direction = 'lower';
-    } else {
-        return;
-    }
-    
-    const pos = currentPositions[direction];
-    if (!pos) return;
-    
-    // CRITICAL: The correct current value is in contract.current_spot
-    // For options, the value changes based on how close the price is to the barrier
-    const currentValue = contract.current_spot || contract.buy_price || 0;
-    
-    // Calculate profit correctly
-    const profit = currentValue - pos.entryPrice;
-    
-    // Update position data
-    pos.currentValue = currentValue;
-    pos.profit = profit;
-    
-    // Update UI
-    updatePositionUI(direction);
-    
-    // Update net profit display
-    updateNetProfit();
-    
-    // Check if contract is closed
-    if (contract.is_sold) {
-        const finalProfit = contract.profit || profit;
-        addLog(`📊 ${direction.toUpperCase()} CLOSED: ${finalProfit >= 0 ? 'WIN' : 'LOSS'} $${finalProfit.toFixed(2)}`, finalProfit >= 0 ? 'success' : 'error');
-        
-        currentPositions[direction] = null;
-        resetPositionUI(direction);
-        const card = document.getElementById(`${direction}-card`);
-        if (card) card.style.borderLeftColor = '#444';
-        
-        // If both closed, complete cycle
-        if (!currentPositions.higher && !currentPositions.lower) {
-            // Calculate final net profit
-            const netProfit = (currentPositions.higher?.profit || 0) + (currentPositions.lower?.profit || 0);
-            
-            sessionStats.cycles++;
-            if (netProfit > 0) sessionStats.wins++;
-            sessionStats.totalProfit += netProfit;
-            updateStats();
-            
-            addLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-            addLog(`🏁 CYCLE COMPLETE | Net: ${netProfit >= 0 ? '+' : ''}$${netProfit.toFixed(2)}`, netProfit >= 0 ? 'success' : 'error');
-            addLog(`📈 Total Profit: $${sessionStats.totalProfit.toFixed(2)}`, 'success');
-            addLog(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-            
-            // Disable close buttons
-            if (closeHigherBtn) closeHigherBtn.disabled = true;
-            if (closeLowerBtn) closeLowerBtn.disabled = true;
-            if (closeBothBtn) closeBothBtn.disabled = true;
-            
-            // Reset positions object
-            currentPositions = { higher: null, lower: null };
-            
-            // Schedule next trade
-            if (isBotRunning) {
-                addLog(`🔄 Next cycle in 3 seconds...`);
-                setTimeout(() => placeBothTrades(), 3000);
-            }
+
+    if(currentPositions.higher && currentPositions.higher.id === id)
+        direction="higher";
+
+    if(currentPositions.lower && currentPositions.lower.id === id)
+        direction="lower";
+
+    if(!direction) return;
+
+    const bid = contract.bid_price || 0;
+    const buy = contract.buy_price || 0;
+
+    const profit = bid - buy;
+
+    currentPositions[direction].value = bid;
+    currentPositions[direction].profit = profit;
+
+    updateUI();
+
+    if(contract.is_sold){
+
+        sessionStats.totalTrades++;
+        sessionStats.pnl += contract.profit;
+
+        if(contract.profit>0)
+            sessionStats.wins++;
+
+        if(direction==="higher"){
+            currentPositions.higher=null;
+            closeHigherBtn.disabled=true;
         }
+
+        if(direction==="lower"){
+            currentPositions.lower=null;
+            closeLowerBtn.disabled=true;
+        }
+
+        if(!currentPositions.higher && !currentPositions.lower){
+
+            tradingLock=false;
+
+            if(isBotRunning)
+                setTimeout(placeHedge,2000);
+
+        }
+
     }
+
 }
 
-// Close functions
-function closeContract(direction) {
+
+// ---------- UI UPDATE ----------
+function updateUI(){
+
+    const higherProfit = currentPositions.higher?.profit || 0;
+    const lowerProfit = currentPositions.lower?.profit || 0;
+
+    const higherValue = currentPositions.higher?.value || 0;
+    const lowerValue = currentPositions.lower?.value || 0;
+
+    higherValueEl.textContent = "$"+higherValue.toFixed(2);
+    lowerValueEl.textContent = "$"+lowerValue.toFixed(2);
+
+    higherPnlEl.textContent = higherProfit.toFixed(2);
+    lowerPnlEl.textContent = lowerProfit.toFixed(2);
+
+    const combined = higherValue + lowerValue;
+
+    const net = higherProfit + lowerProfit;
+
+    combinedValueEl.textContent="$"+combined.toFixed(2);
+
+    netProfitEl.textContent=(net>=0?"+":"")+"$"+net.toFixed(2);
+
+}
+
+
+// ---------- CLOSE CONTRACT ----------
+function closeContract(direction){
+
     const pos = currentPositions[direction];
-    if (!pos || !pos.id) {
-        addLog(`No active ${direction.toUpperCase()} contract`, 'error');
-        return;
-    }
-    addLog(`🔒 Closing ${direction.toUpperCase()} contract (ID: ${pos.id})...`);
-    ws.send(JSON.stringify({ sell: pos.id, price: 0, req_id: Date.now() }));
+
+    if(!pos) return;
+
+    ws.send(JSON.stringify({
+
+        sell:pos.id,
+        price:0
+
+    }));
+
 }
 
-function closeBoth() {
-    addLog(`🔒 Closing BOTH contracts...`);
-    if (currentPositions.higher) closeContract('higher');
-    if (currentPositions.lower) closeContract('lower');
+
+// ---------- CLOSE BOTH ----------
+function closeBoth(){
+
+    closeContract("higher");
+    closeContract("lower");
+
 }
 
-// Bot controls
-function startBot() {
-    if (!isConnected) {
-        addLog('Please connect first', 'error');
-        return;
-    }
-    if (!currentPrice) {
-        addLog('Waiting for price feed...', 'error');
-        setTimeout(startBot, 1000);
-        return;
-    }
-    
-    // Reset positions before starting
-    currentPositions = { higher: null, lower: null };
-    resetPositionUI('higher');
-    resetPositionUI('lower');
-    
-    isBotRunning = true;
-    if (startBtn) startBtn.disabled = true;
-    if (stopBtn) stopBtn.disabled = false;
-    if (emergencyBtn) emergencyBtn.disabled = false;
-    
-    addLog(`🚀 HEDGE BOT STARTED on ${marketSelect.value}`, 'success');
-    addLog(`💡 Settings: $${stakeInput.value} each | ${durationInput.value} ticks | offset ${offsetInput.value}`);
-    
-    placeBothTrades();
-}
 
-function stopBot() {
-    isBotRunning = false;
-    if (startBtn) startBtn.disabled = false;
-    if (stopBtn) stopBtn.disabled = true;
-    addLog(`🛑 Bot stopped`, 'error');
-}
+// ---------- EVENTS ----------
+connectBtn.addEventListener("click",connect);
 
-function emergencyStop() {
-    addLog(`⚠️⚠️⚠️ EMERGENCY STOP - Closing all positions ⚠️⚠️⚠️`, 'error');
-    isBotRunning = false;
-    if (currentPositions.higher) closeContract('higher');
-    if (currentPositions.lower) closeContract('lower');
-    if (startBtn) startBtn.disabled = false;
-    if (stopBtn) stopBtn.disabled = true;
-}
+startBtn.addEventListener("click",startBot);
 
-// Account switching
-function switchAccount(type) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-        addLog('Not connected', 'error');
-        return;
-    }
-    addLog(`Switching to ${type} account...`);
-    ws.send(JSON.stringify({ switch_account: type === 'demo' ? 1 : 0, req_id: Date.now() }));
-}
+stopBtn.addEventListener("click",stopBot);
 
-function enableControls(enabled) {
-    if (marketSelect) marketSelect.disabled = !enabled;
-    if (stakeInput) stakeInput.disabled = !enabled;
-    if (durationInput) durationInput.disabled = !enabled;
-    if (offsetInput) offsetInput.disabled = !enabled;
-    if (!enabled) {
-        if (startBtn) startBtn.disabled = true;
-        if (stopBtn) stopBtn.disabled = true;
-        if (emergencyBtn) emergencyBtn.disabled = true;
-    }
-}
+closeHigherBtn.addEventListener("click",()=>closeContract("higher"));
 
-function onMarketChange() {
-    currentSymbol = marketSelect.value;
-    addLog(`Switched to ${marketSelect.options[marketSelect.selectedIndex].text}`);
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ forget_all: 'ticks', req_id: Date.now() }));
-        ws.send(JSON.stringify({ ticks: currentSymbol, subscribe: 1, req_id: Date.now() }));
-    }
-}
+closeLowerBtn.addEventListener("click",()=>closeContract("lower"));
 
-// ===== INITIALIZATION =====
-document.addEventListener('DOMContentLoaded', () => {
-    // Get all DOM elements
-    connectBtn = document.getElementById('connect-btn');
-    startBtn = document.getElementById('start-btn');
-    stopBtn = document.getElementById('stop-btn');
-    emergencyBtn = document.getElementById('emergency-btn');
-    demoSwitch = document.getElementById('demo-switch');
-    realSwitch = document.getElementById('real-switch');
-    marketSelect = document.getElementById('market');
-    stakeInput = document.getElementById('stake');
-    durationInput = document.getElementById('duration');
-    offsetInput = document.getElementById('offset');
-    closeHigherBtn = document.getElementById('close-higher');
-    closeLowerBtn = document.getElementById('close-lower');
-    closeBothBtn = document.getElementById('close-both');
-    tokenInput = document.getElementById('token');
-    
-    // Attach event listeners
-    if (connectBtn) {
-        connectBtn.addEventListener('click', () => {
-            const token = tokenInput ? tokenInput.value.trim() : '';
-            if (!token) {
-                addLog('❌ Please enter your API token', 'error');
-                return;
-            }
-            localStorage.setItem('deriv_token', token);
-            connectWebSocket(token);
-        });
-    }
-    
-    if (startBtn) startBtn.addEventListener('click', startBot);
-    if (stopBtn) stopBtn.addEventListener('click', stopBot);
-    if (emergencyBtn) emergencyBtn.addEventListener('click', emergencyStop);
-    if (demoSwitch) demoSwitch.addEventListener('click', () => switchAccount('demo'));
-    if (realSwitch) realSwitch.addEventListener('click', () => switchAccount('real'));
-    if (marketSelect) marketSelect.addEventListener('change', onMarketChange);
-    if (closeHigherBtn) closeHigherBtn.addEventListener('click', () => closeContract('higher'));
-    if (closeLowerBtn) closeLowerBtn.addEventListener('click', () => closeContract('lower'));
-    if (closeBothBtn) closeBothBtn.addEventListener('click', closeBoth);
-    
-    // Load saved token
-    const savedToken = localStorage.getItem('deriv_token');
-    if (savedToken && tokenInput) {
-        tokenInput.value = savedToken;
-        addLog('Found saved token, connecting...');
-        connectWebSocket(savedToken);
-    } else {
-        addLog('🛡️ Hedge Bot v2.0 Ready - Enter your API token and click Connect');
-    }
-});
+closeBothBtn.addEventListener("click",closeBoth);
