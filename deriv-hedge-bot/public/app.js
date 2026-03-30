@@ -352,14 +352,25 @@ function handleDerivMessage(data) {
             if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
                 currentPositions.higher = null;
                 if (closeHigherBtn) closeHigherBtn.disabled = true;
+                // Reset higher display
+                document.getElementById('higher-barrier').textContent = '-';
+                document.getElementById('higher-entry').textContent = '-';
+                document.getElementById('higher-current').textContent = '-';
+                document.getElementById('higher-pnl').textContent = '-';
             }
             if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
                 currentPositions.lower = null;
                 if (closeLowerBtn) closeLowerBtn.disabled = true;
+                // Reset lower display
+                document.getElementById('lower-barrier').textContent = '-';
+                document.getElementById('lower-entry').textContent = '-';
+                document.getElementById('lower-current').textContent = '-';
+                document.getElementById('lower-pnl').textContent = '-';
             }
             
             if (!currentPositions.higher && !currentPositions.lower) {
                 if (closeBothBtn) closeBothBtn.disabled = true;
+                updateCombinedValues();
             }
             
             if (!currentPositions.higher && !currentPositions.lower && isBotRunning) {
@@ -543,6 +554,8 @@ function handleProposalResponse(proposal, direction) {
 function handleBuyResponse(buy) {
     const direction = buy.contract_type === 'CALL' ? 'higher' : 'lower';
     
+    addLogEntry(`🔍 Processing ${direction.toUpperCase()} buy response...`, 'system');
+    
     if (currentPositions[direction]) {
         addLogEntry(`⚠️ ${direction.toUpperCase()} contract already exists. Skipping duplicate.`, 'system');
         activeProposalCount--;
@@ -561,20 +574,34 @@ function handleBuyResponse(buy) {
     
     addLogEntry(`✅ ${direction.toUpperCase()} contract purchased! ID: ${buy.contract_id} | Price: $${buy.buy_price}`, 'success');
     
-    // Update display
+    // Update display for this direction
     const barrierEl = document.getElementById(`${direction}-barrier`);
-    if (barrierEl) barrierEl.textContent = buy.barrier;
-    
     const entryEl = document.getElementById(`${direction}-entry`);
-    if (entryEl) entryEl.textContent = `$${buy.buy_price}`;
-    
     const currentEl = document.getElementById(`${direction}-current`);
-    if (currentEl) currentEl.textContent = `$${buy.buy_price}`;
+    const pnlEl = document.getElementById(`${direction}-pnl`);
     
+    if (barrierEl) {
+        barrierEl.textContent = buy.barrier;
+        addLogEntry(`📊 Updated ${direction} barrier display: ${buy.barrier}`, 'system');
+    }
+    if (entryEl) {
+        entryEl.textContent = `$${buy.buy_price}`;
+        addLogEntry(`📊 Updated ${direction} entry display: $${buy.buy_price}`, 'system');
+    }
+    if (currentEl) {
+        currentEl.textContent = `$${buy.buy_price}`;
+    }
+    if (pnlEl) {
+        pnlEl.textContent = `$0.00 (0.0%)`;
+        pnlEl.style.color = '#888';
+    }
+    
+    // Enable close buttons
     if (direction === 'higher' && closeHigherBtn) closeHigherBtn.disabled = false;
     if (direction === 'lower' && closeLowerBtn) closeLowerBtn.disabled = false;
     if (closeBothBtn) closeBothBtn.disabled = false;
     
+    // Subscribe to contract updates
     ws.send(JSON.stringify({
         proposal_open_contract: 1,
         contract_id: buy.contract_id,
@@ -585,14 +612,16 @@ function handleBuyResponse(buy) {
     
     // Check if both contracts are now active
     if (currentPositions.higher && currentPositions.lower) {
-        addLogEntry(`🎉 Both HIGHER and LOWER contracts are now active!`, 'success');
+        addLogEntry(`🎉🎉🎉 BOTH HIGHER AND LOWER CONTRACTS ARE NOW ACTIVE! 🎉🎉🎉`, 'success');
         tradingLock = false;
         
-        // Start auto-close monitoring if enabled (you can add this feature later)
+        // Start auto-close monitoring
         if (!autoCloseInterval) {
             autoCloseInterval = setInterval(checkAutoClose, 500);
             addLogEntry(`📊 Auto-close monitoring started (checking every 0.5s)`, 'system');
         }
+    } else {
+        addLogEntry(`⏳ Waiting for ${currentPositions.higher ? 'LOWER' : 'HIGHER'} contract...`, 'system');
     }
 }
 
@@ -623,21 +652,19 @@ function updateContractValue(contract) {
     currentPositions[direction].profit = profit;
     currentPositions[direction].profitPercent = profitPercent;
     
-    updatePositionDisplay(direction, currentValue, profit, profitPercent);
-    updateCombinedValues();
-}
-
-function updatePositionDisplay(direction, value, profit, profitPercent) {
+    // Update display
     const currentEl = document.getElementById(`${direction}-current`);
     const pnlEl = document.getElementById(`${direction}-pnl`);
     
     if (currentEl) {
-        currentEl.textContent = `$${value.toFixed(2)}`;
+        currentEl.textContent = `$${currentValue.toFixed(2)}`;
     }
     if (pnlEl) {
         pnlEl.textContent = `${profit >= 0 ? '+' : ''}$${profit.toFixed(2)} (${profitPercent.toFixed(1)}%)`;
         pnlEl.style.color = profit >= 0 ? '#00ff88' : '#ff4444';
     }
+    
+    updateCombinedValues();
 }
 
 function updateCombinedValues() {
