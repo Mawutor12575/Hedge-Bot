@@ -3,236 +3,114 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Deriv Hedge Bot | Parallel Trading System</title>
+    <title>Deriv Hedge Bot - Simple Parallel Trades</title>
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="container">
-        <!-- Header -->
         <header>
-            <div class="logo">
-                <span class="logo-icon">🛡️</span>
-                <h1>Hedge Bot</h1>
-                <span class="badge">PARALLEL TRADING v1.0</span>
-            </div>
-            <div class="account-section">
-                <div class="price-card">
-                    <span class="label">Market</span>
-                    <span id="market-symbol" class="value">R_75</span>
-                </div>
-                <div class="price-card">
-                    <span class="label">Price</span>
-                    <span id="current-price" class="value">$0.00</span>
-                </div>
-                <div class="price-card">
-                    <span class="label">Balance</span>
-                    <span id="account-balance" class="value">$0.00</span>
-                </div>
-                <div id="auth-status" class="auth-status">
-                    <span class="status-dot"></span>
+            <h1>🛡️ Hedge Bot</h1>
+            <div class="status-area">
+                <div id="connection-status" class="status disconnected">
+                    <span class="dot"></span>
                     <span>Disconnected</span>
                 </div>
+                <div id="balance-display">Balance: $0.00</div>
+                <div id="price-display">Price: --</div>
             </div>
         </header>
 
-        <!-- Connection Panel -->
-        <div class="card connection-card">
-            <h2>🔌 Connection</h2>
-            <div class="connection-controls">
-                <input type="password" id="api-token" placeholder="Enter your Deriv API Token" class="token-input">
-                <button id="connect-btn" class="btn-primary">Connect</button>
-                <div id="account-switch" style="display: none;">
-                    <button id="demo-btn" class="btn-switch">Demo</button>
-                    <button id="real-btn" class="btn-switch">Real</button>
+        <div class="main-grid">
+            <!-- Connection Panel -->
+            <div class="card">
+                <h2>🔌 Connection</h2>
+                <div class="input-group">
+                    <input type="password" id="token" placeholder="Deriv API Token" class="token-input">
+                    <button id="connect-btn" class="btn-primary">Connect</button>
+                </div>
+                <div id="account-buttons" style="display: none; margin-top: 10px;">
+                    <button id="demo-switch" class="btn-switch">Demo</button>
+                    <button id="real-switch" class="btn-switch">Real</button>
                 </div>
             </div>
-        </div>
 
-        <!-- Trading Controls -->
-        <div class="card trading-card">
-            <h2>⚙️ Trading Parameters</h2>
-            <div class="params-grid">
-                <div class="param-group">
-                    <label>Market</label>
-                    <select id="market-select">
-                        <option value="R_10">Volatility 10 Index</option>
-                        <option value="R_25">Volatility 25 Index</option>
-                        <option value="R_50">Volatility 50 Index</option>
-                        <option value="R_75" selected>Volatility 75 Index</option>
-                        <option value="R_100">Volatility 100 Index</option>
-                    </select>
-                </div>
-                <div class="param-group">
-                    <label>Stake per Trade ($)</label>
-                    <input type="number" id="stake" value="1.00" step="0.50" min="0.35">
-                </div>
-                <div class="param-group">
-                    <label>Duration (ticks)</label>
-                    <input type="number" id="duration" value="10" step="1" min="5" max="30">
-                </div>
-                <div class="param-group">
-                    <label>Barrier Offset</label>
-                    <input type="number" id="offset" value="0.35" step="0.05" min="0.10" max="1.00">
-                    <small id="offset-hint">Optimized for $0.20-0.50 net profit</small>
-                </div>
-                <div class="param-group">
-                    <label>Min Payout Multiplier</label>
-                    <input type="number" id="min-payout" value="2.20" step="0.05" min="2.00" max="3.00">
-                    <small>Target net profit = Stake × (Payout - 2)</small>
-                </div>
-                <div class="param-group">
-                    <label>Auto-Close Target ($)</label>
-                    <input type="number" id="profit-target" value="5.00" step="1.00">
-                </div>
-            </div>
-            <div class="bot-controls">
-                <button id="start-bot" class="btn-start" disabled>▶ Start Hedge Bot</button>
-                <button id="stop-bot" class="btn-stop" disabled>⏹ Stop Bot</button>
-                <button id="emergency-stop" class="btn-emergency" disabled>⚠️ Emergency Stop</button>
-            </div>
-        </div>
-
-        <!-- Live Ticks Display -->
-        <div class="card ticks-card">
-            <h2>📊 Live Price Feed</h2>
-            <div class="tick-header">
-                <div class="last-digit-box">
-                    <span class="label">Last Digit</span>
-                    <span id="last-digit" class="digit-large">-</span>
-                </div>
-                <div class="last-ten-box">
-                    <span class="label">Last 10 Digits</span>
-                    <span id="last-ten-digits" class="digit-sequence">-</span>
-                </div>
-                <button id="pause-ticks-btn" class="btn-small">Pause</button>
-            </div>
-            <div id="tick-history" class="tick-history">
-                <div class="tick-placeholder">Waiting for ticks...</div>
-            </div>
-        </div>
-
-        <!-- Active Positions -->
-        <div class="card positions-card">
-            <h2>🎯 Active Positions</h2>
-            <div class="positions-grid">
-                <!-- HIGHER Position -->
-                <div id="higher-position" class="position-card">
-                    <div class="position-header">
-                        <span class="icon">📈</span>
-                        <span class="title">HIGHER (CALL)</span>
-                        <span id="higher-status" class="status">Pending</span>
+            <!-- Trading Controls -->
+            <div class="card">
+                <h2>⚙️ Trade Settings</h2>
+                <div class="settings-grid">
+                    <div>
+                        <label>Market</label>
+                        <select id="market">
+                            <option value="R_10">Volatility 10</option>
+                            <option value="R_25">Volatility 25</option>
+                            <option value="R_50">Volatility 50</option>
+                            <option value="R_75" selected>Volatility 75</option>
+                            <option value="R_100">Volatility 100</option>
+                        </select>
                     </div>
-                    <div class="position-details">
-                        <div class="detail-row">
-                            <span>Entry:</span>
-                            <span id="higher-entry">-</span>
-                        </div>
-                        <div class="detail-row">
-                            <span>Barrier:</span>
-                            <span id="higher-barrier">-</span>
-                        </div>
-                        <div class="detail-row">
-                            <span>Current:</span>
-                            <span id="higher-current">-</span>
-                        </div>
-                        <div class="detail-row profit-row">
-                            <span>P&L:</span>
-                            <span id="higher-pnl">-</span>
-                        </div>
-                        <div class="detail-row">
-                            <span>Ticks Left:</span>
-                            <span id="higher-ticks">-</span>
-                        </div>
+                    <div>
+                        <label>Stake ($)</label>
+                        <input type="number" id="stake" value="1" step="0.5" min="0.35">
                     </div>
-                    <div id="higher-tick-indicator" class="tick-indicator"></div>
-                    <button id="close-higher" class="btn-close" disabled>Close Higher</button>
+                    <div>
+                        <label>Duration (ticks)</label>
+                        <input type="number" id="duration" value="10" step="1" min="5" max="30">
+                    </div>
+                    <div>
+                        <label>Barrier Offset</label>
+                        <input type="number" id="offset" value="0.55" step="0.05" min="0.1">
+                    </div>
                 </div>
-
-                <!-- LOWER Position -->
-                <div id="lower-position" class="position-card">
-                    <div class="position-header">
-                        <span class="icon">📉</span>
-                        <span class="title">LOWER (PUT)</span>
-                        <span id="lower-status" class="status">Pending</span>
-                    </div>
-                    <div class="position-details">
-                        <div class="detail-row">
-                            <span>Entry:</span>
-                            <span id="lower-entry">-</span>
-                        </div>
-                        <div class="detail-row">
-                            <span>Barrier:</span>
-                            <span id="lower-barrier">-</span>
-                        </div>
-                        <div class="detail-row">
-                            <span>Current:</span>
-                            <span id="lower-current">-</span>
-                        </div>
-                        <div class="detail-row profit-row">
-                            <span>P&L:</span>
-                            <span id="lower-pnl">-</span>
-                        </div>
-                        <div class="detail-row">
-                            <span>Ticks Left:</span>
-                            <span id="lower-ticks">-</span>
-                        </div>
-                    </div>
-                    <div id="lower-tick-indicator" class="tick-indicator"></div>
-                    <button id="close-lower" class="btn-close" disabled>Close Lower</button>
+                <div class="button-group">
+                    <button id="start-btn" class="btn-start" disabled>▶ Start Bot</button>
+                    <button id="stop-btn" class="btn-stop" disabled>⏹ Stop</button>
+                    <button id="emergency-btn" class="btn-emergency" disabled>⚠️ Emergency</button>
                 </div>
             </div>
 
-            <!-- Combined Stats -->
-            <div class="combined-stats">
-                <div class="stat-box">
-                    <span>Combined Value</span>
-                    <span id="combined-value" class="highlight">$0.00</span>
-                </div>
-                <div class="stat-box">
-                    <span>Net Profit</span>
-                    <span id="net-profit" class="highlight">$0.00</span>
-                </div>
-                <div class="stat-box">
-                    <span>Target Progress</span>
-                    <div class="progress-bar">
-                        <div id="progress-fill" class="progress-fill"></div>
+            <!-- Active Positions -->
+            <div class="card">
+                <h2>📊 Active Positions</h2>
+                <div class="positions-row">
+                    <div class="position" id="higher-card">
+                        <div class="position-title">📈 HIGHER (CALL)</div>
+                        <div class="position-detail">Barrier: <span id="higher-barrier">-</span></div>
+                        <div class="position-detail">Entry: <span id="higher-entry">-</span></div>
+                        <div class="position-detail">Current: <span id="higher-current">-</span></div>
+                        <div class="position-detail profit">P&L: <span id="higher-pnl">-</span></div>
+                        <button id="close-higher" class="btn-close-small" disabled>Close</button>
                     </div>
-                    <span id="progress-text">0%</span>
+                    <div class="position" id="lower-card">
+                        <div class="position-title">📉 LOWER (PUT)</div>
+                        <div class="position-detail">Barrier: <span id="lower-barrier">-</span></div>
+                        <div class="position-detail">Entry: <span id="lower-entry">-</span></div>
+                        <div class="position-detail">Current: <span id="lower-current">-</span></div>
+                        <div class="position-detail profit">P&L: <span id="lower-pnl">-</span></div>
+                        <button id="close-lower" class="btn-close-small" disabled>Close</button>
+                    </div>
                 </div>
-                <button id="close-both" class="btn-close-both" disabled>🔒 CLOSE BOTH</button>
-            </div>
-        </div>
-
-        <!-- Statistics -->
-        <div class="card stats-card">
-            <h2>📈 Session Statistics</h2>
-            <div class="stats-grid">
-                <div class="stat-item">
-                    <span class="stat-label">Total Cycles</span>
-                    <span id="total-cycles" class="stat-value">0</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Winning Cycles</span>
-                    <span id="winning-cycles" class="stat-value">0</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Win Rate</span>
-                    <span id="win-rate" class="stat-value">0%</span>
-                </div>
-                <div class="stat-item">
-                    <span class="stat-label">Total Net Profit</span>
-                    <span id="total-profit" class="stat-value profit">$0.00</span>
+                <div class="combined">
+                    <span>Net Profit: <strong id="net-profit">$0.00</strong></span>
+                    <button id="close-both" class="btn-close-both" disabled>Close Both</button>
                 </div>
             </div>
-        </div>
 
-        <!-- Trade Log -->
-        <div class="card log-card">
-            <h2>📝 Trade Log</h2>
-            <div id="trade-log" class="trade-log">
-                <div class="log-entry system">🛡️ Hedge Bot v1.0 initialized. Connect your API token to begin.</div>
-                <div class="log-entry system">💡 Target: $0.20-0.50 net profit per trade cycle</div>
+            <!-- Stats & Log -->
+            <div class="card">
+                <h2>📈 Stats</h2>
+                <div class="stats-row">
+                    <div>Cycles: <strong id="cycle-count">0</strong></div>
+                    <div>Wins: <strong id="win-count">0</strong></div>
+                    <div>Total Profit: <strong id="total-profit">$0.00</strong></div>
+                </div>
+            </div>
+
+            <div class="card log-card">
+                <h2>📝 Log</h2>
+                <div id="log" class="log-area">
+                    <div class="log-entry">Ready. Connect your token to start.</div>
+                </div>
             </div>
         </div>
     </div>
