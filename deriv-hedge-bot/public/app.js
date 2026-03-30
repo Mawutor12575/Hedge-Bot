@@ -36,6 +36,7 @@ let pendingProposals = {
     lower: null
 };
 let proposalMap = new Map(); // Map proposal ID to direction
+let currentToken = null; // Store current token
 
 // Trading Parameters
 const TRADING_CONFIG = {
@@ -295,13 +296,12 @@ async function connectWithToken() {
     
     addLogEntry('Connecting with API token...', 'system');
     localStorage.setItem('deriv_token', token);
-    
-    // Create a new WebSocket connection with the token in the URL
-    connectWebSocket(token);
+    currentToken = token;
+    connectWebSocket();
 }
 
-function connectWebSocket(token) {
-    if (!token) {
+function connectWebSocket() {
+    if (!currentToken) {
         addLogEntry('No token found. Please enter your API token.', 'system');
         return;
     }
@@ -310,16 +310,14 @@ function connectWebSocket(token) {
         ws.close();
     }
     
-    // Important: Use the token in the WebSocket URL with the oauth parameter
-    const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=84911&l=EN&oauth_token=${token}`;
-    ws = new WebSocket(wsUrl);
+    // Create WebSocket connection without token in URL
+    ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
     
     ws.onopen = () => {
-        addLogEntry('WebSocket connected successfully', 'system');
-        
-        // Request authorization info to confirm connection
+        addLogEntry('WebSocket connected, authorizing...', 'system');
+        // Send authorization after connection is open
         ws.send(JSON.stringify({ 
-            authorize: token,
+            authorize: currentToken,
             req_id: Date.now()
         }));
     };
@@ -327,6 +325,7 @@ function connectWebSocket(token) {
     ws.onmessage = (event) => {
         try {
             const data = JSON.parse(event.data);
+            console.log('Received:', data); // Debug log
             handleDerivMessage(data);
         } catch (error) {
             addLogEntry(`Error parsing message: ${error.message}`, 'system');
@@ -357,14 +356,16 @@ function connectWebSocket(token) {
         if (isBotRunning && reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
             addLogEntry(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`, 'system');
-            setTimeout(() => connectWebSocket(token), reconnectDelay);
+            setTimeout(() => connectWebSocket(), reconnectDelay);
             reconnectDelay = Math.min(reconnectDelay * 2, 30000);
         } else {
             reconnectAttempts = 0;
             reconnectDelay = 1000;
-            isBotRunning = false;
-            if (startBtn) startBtn.disabled = false;
-            if (stopBtn) stopBtn.disabled = true;
+            if (isBotRunning) {
+                isBotRunning = false;
+                if (startBtn) startBtn.disabled = false;
+                if (stopBtn) stopBtn.disabled = true;
+            }
         }
     };
 }
@@ -379,11 +380,6 @@ function handleDerivMessage(data) {
             enableControls(false);
             localStorage.removeItem('deriv_token');
             if (ws) ws.close();
-        }
-        
-        if (data.error.message.includes('barrier')) {
-            tradingLock = false;
-            activeProposalCount = 0;
         }
         return;
     }
@@ -410,10 +406,15 @@ function handleDerivMessage(data) {
         enableControls(true);
         subscribeToTicks();
         
+        // Request balance
         ws.send(JSON.stringify({ balance: 1, req_id: Date.now() }));
+        return;
     }
     
-    if (data.tick) handleTick(data);
+    if (data.tick) {
+        handleTick(data);
+        return;
+    }
     
     if (data.proposal) {
         // Get the direction from our map or determine from contract_type
@@ -427,11 +428,18 @@ function handleDerivMessage(data) {
             direction = proposalMap.get(data.proposal.id);
         }
         handleProposalResponse(data.proposal, direction);
+        return;
     }
     
-    if (data.buy) handleBuyResponse(data.buy);
+    if (data.buy) {
+        handleBuyResponse(data.buy);
+        return;
+    }
     
-    if (data.sell) handleSellResponse(data.sell);
+    if (data.sell) {
+        handleSellResponse(data.sell);
+        return;
+    }
     
     if (data.proposal_open_contract) {
         const contract = data.proposal_open_contract;
@@ -472,9 +480,13 @@ function handleDerivMessage(data) {
                 setTimeout(() => placeHedgeTrade(), 2000);
             }
         }
+        return;
     }
     
-    if (data.balance) updateBalanceDisplay(data.balance.balance);
+    if (data.balance) {
+        updateBalanceDisplay(data.balance.balance);
+        return;
+    }
 }
 
 function updatePriceDisplay(price) {
@@ -637,8 +649,7 @@ async function placeHedgeTrade() {
     
     // Proposal for CALL (higher)
     const higherReqId = Date.now();
-    const higherProposalId = `higher_${higherReqId}`;
-    proposalMap.set(higherProposalId, 'higher');
+    proposalMap.set(higherReqId, 'higher');
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -656,8 +667,7 @@ async function placeHedgeTrade() {
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             const lowerReqId = Date.now();
-            const lowerProposalId = `lower_${lowerReqId}`;
-            proposalMap.set(lowerProposalId, 'lower');
+            proposalMap.set(lowerReqId, 'lower');
             ws.send(JSON.stringify({
                 proposal: 1,
                 amount: stake,
@@ -774,7 +784,6 @@ function updateContractValue(contract) {
     }
     
     // Use contract.profit directly when the API provides it (most reliable)
-    // currentValue is the current sell/bid price of the contract (not the spot price)
     const buyPrice = currentPositions[direction]?.entryPrice || contract.buy_price || 0;
     let currentValue, profit;
 
