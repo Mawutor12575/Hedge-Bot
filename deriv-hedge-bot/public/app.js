@@ -292,8 +292,11 @@ async function connectWithToken() {
         addLogEntry('Please enter your API token', 'system');
         return;
     }
+    
     addLogEntry('Connecting with API token...', 'system');
     localStorage.setItem('deriv_token', token);
+    
+    // Create a new WebSocket connection with the token in the URL
     connectWebSocket(token);
 }
 
@@ -303,12 +306,18 @@ function connectWebSocket(token) {
         return;
     }
     
-    if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.close();
+    }
     
-    ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=84911');
+    // Important: Use the token in the WebSocket URL with the oauth parameter
+    const wsUrl = `wss://ws.derivws.com/websockets/v3?app_id=84911&l=EN&oauth_token=${token}`;
+    ws = new WebSocket(wsUrl);
     
     ws.onopen = () => {
-        addLogEntry('WebSocket connected, authorizing...', 'system');
+        addLogEntry('WebSocket connected successfully', 'system');
+        
+        // Request authorization info to confirm connection
         ws.send(JSON.stringify({ 
             authorize: token,
             req_id: Date.now()
@@ -344,6 +353,7 @@ function connectWebSocket(token) {
             if (el) el.textContent = '$0.00';
         });
         
+        // Reconnection logic
         if (isBotRunning && reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
             addLogEntry(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`, 'system');
@@ -352,6 +362,9 @@ function connectWebSocket(token) {
         } else {
             reconnectAttempts = 0;
             reconnectDelay = 1000;
+            isBotRunning = false;
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.disabled = true;
         }
     };
 }
@@ -403,14 +416,15 @@ function handleDerivMessage(data) {
     if (data.tick) handleTick(data);
     
     if (data.proposal) {
-        // Resolve direction: first try req_id map, then fall back to contract_type
-        let direction = proposalMap.get(data.req_id);
-        if (!direction) {
-            if (data.proposal.contract_type === 'CALL') {
-                direction = 'higher';
-            } else if (data.proposal.contract_type === 'PUT') {
-                direction = 'lower';
-            }
+        // Get the direction from our map or determine from contract_type
+        let direction = null;
+        if (data.proposal.contract_type === 'CALL') {
+            direction = 'higher';
+        } else if (data.proposal.contract_type === 'PUT') {
+            direction = 'lower';
+        } else {
+            // Try to get from our stored map
+            direction = proposalMap.get(data.proposal.id);
         }
         handleProposalResponse(data.proposal, direction);
     }
@@ -623,7 +637,8 @@ async function placeHedgeTrade() {
     
     // Proposal for CALL (higher)
     const higherReqId = Date.now();
-    proposalMap.set(higherReqId, 'higher');
+    const higherProposalId = `higher_${higherReqId}`;
+    proposalMap.set(higherProposalId, 'higher');
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -637,11 +652,12 @@ async function placeHedgeTrade() {
         req_id: higherReqId
     }));
     
-    // Proposal for PUT (lower) — use a distinct req_id after a short delay
+    // Proposal for PUT (lower)
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             const lowerReqId = Date.now();
-            proposalMap.set(lowerReqId, 'lower');
+            const lowerProposalId = `lower_${lowerReqId}`;
+            proposalMap.set(lowerProposalId, 'lower');
             ws.send(JSON.stringify({
                 proposal: 1,
                 amount: stake,
@@ -655,7 +671,7 @@ async function placeHedgeTrade() {
                 req_id: lowerReqId
             }));
         }
-    }, 300);
+    }, 200);
 }
 
 function handleProposalResponse(proposal, direction) {
