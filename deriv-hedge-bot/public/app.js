@@ -1,21 +1,13 @@
 // Configuration
 let ws = null;
 let isBotRunning = false;
-let currentPositions = {
-    higher: null,
-    lower: null
-};
-let previousValues = {
-    higher: 0,
-    lower: 0
-};
+let currentPosition = null;
 let sessionStats = {
     totalTrades: 0,
     wins: 0,
     totalProfit: 0,
     sessionPnL: 0
 };
-let autoCloseInterval = null;
 let currentPrice = null;
 let currentAccountType = 'demo';
 let isConnected = false;
@@ -24,24 +16,12 @@ let maxReconnectAttempts = 5;
 let reconnectDelay = 1000;
 let currentSymbol = 'R_75';
 let availableMarkets = [];
-let tickHistory = [];
-let maxTickHistory = 50;
-let lastTenDigits = [];
-let isTickDisplayPaused = false;
-let tradingLock = false;
-let activeProposalCount = 0;
-let contractSubscriptionIds = [];
-let proposalMap = new Map(); // Map proposal ID to direction
 let currentToken = null;
-let pendingProposals = {
-    higher: null,
-    lower: null
-};
+let tradingLock = false;
 
 // Trading Parameters
 const TRADING_CONFIG = {
     barrierOffset: 14.9962,
-    minPayout: 2.3,
     defaultDuration: 5,
     defaultStake: 1.0
 };
@@ -54,9 +34,7 @@ const emergencyBtn = document.getElementById('emergency-btn');
 const stakeInput = document.getElementById('stake');
 const durationInput = document.getElementById('duration');
 const offsetInput = document.getElementById('offset');
-const closeHigherBtn = document.getElementById('close-higher');
-const closeLowerBtn = document.getElementById('close-lower');
-const closeBothBtn = document.getElementById('close-both');
+const closeBtn = document.getElementById('close-higher');
 const demoBtn = document.getElementById('demo-switch');
 const realBtn = document.getElementById('real-switch');
 const authStatus = document.getElementById('connection-status');
@@ -74,9 +52,7 @@ if (loginBtn) loginBtn.addEventListener('click', connectWithToken);
 if (startBtn) startBtn.addEventListener('click', startBot);
 if (stopBtn) stopBtn.addEventListener('click', stopBot);
 if (emergencyBtn) emergencyBtn.addEventListener('click', emergencyStop);
-if (closeHigherBtn) closeHigherBtn.addEventListener('click', () => closeContract('higher'));
-if (closeLowerBtn) closeLowerBtn.addEventListener('click', () => closeContract('lower'));
-if (closeBothBtn) closeBothBtn.addEventListener('click', closeBothContracts);
+if (closeBtn) closeBtn.addEventListener('click', closeContract);
 if (demoBtn) demoBtn.addEventListener('click', () => switchAccount('demo'));
 if (realBtn) realBtn.addEventListener('click', () => switchAccount('real'));
 if (marketSelect) marketSelect.addEventListener('change', onMarketChange);
@@ -174,9 +150,6 @@ function onMarketChange() {
 function subscribeToTicks() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     
-    tickHistory = [];
-    lastTenDigits = [];
-    
     ws.send(JSON.stringify({
         forget_all: 'ticks',
         req_id: Date.now()
@@ -262,15 +235,6 @@ function connectWebSocket() {
         enableControls(false);
         isConnected = false;
         
-        currentPositions = { higher: null, lower: null };
-        previousValues = { higher: 0, lower: 0 };
-        
-        const resetEls = ['higher-current', 'lower-current', 'higher-pnl', 'lower-pnl', 'net-profit'];
-        resetEls.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.textContent = '-';
-        });
-        
         if (isBotRunning && reconnectAttempts < maxReconnectAttempts) {
             reconnectAttempts++;
             addLogEntry(`Attempting to reconnect (${reconnectAttempts}/${maxReconnectAttempts})...`, 'system');
@@ -333,20 +297,7 @@ function handleDerivMessage(data) {
     }
     
     if (data.proposal) {
-        let direction = null;
-        // Try to get direction from our stored map
-        direction = proposalMap.get(data.req_id);
-        
-        // Fallback to contract_type if not found
-        if (!direction) {
-            if (data.proposal.contract_type === 'CALL') {
-                direction = 'higher';
-            } else if (data.proposal.contract_type === 'PUT') {
-                direction = 'lower';
-            }
-        }
-        
-        handleProposalResponse(data.proposal, direction);
+        handleProposalResponse(data.proposal);
         return;
     }
     
@@ -374,24 +325,14 @@ function handleDerivMessage(data) {
             if (profit > 0) sessionStats.wins++;
             updateStatsDisplay();
             
-            if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
-                currentPositions.higher = null;
-                if (closeHigherBtn) closeHigherBtn.disabled = true;
-            }
-            if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
-                currentPositions.lower = null;
-                if (closeLowerBtn) closeLowerBtn.disabled = true;
+            if (currentPosition && currentPosition.id === contract.contract_id) {
+                currentPosition = null;
+                if (closeBtn) closeBtn.disabled = true;
             }
             
-            if (!currentPositions.higher && !currentPositions.lower) {
-                if (closeBothBtn) closeBothBtn.disabled = true;
-            }
-            
-            contractSubscriptionIds = contractSubscriptionIds.filter(id => id !== contract.contract_id);
-            
-            if (!currentPositions.higher && !currentPositions.lower && isBotRunning) {
+            if (!currentPosition && isBotRunning) {
                 tradingLock = false;
-                setTimeout(() => placeHedgeTrade(), 2000);
+                setTimeout(() => placeTrade(), 2000);
             }
         }
         return;
@@ -418,12 +359,12 @@ async function startBot() {
     startBtn.disabled = true;
     stopBtn.disabled = false;
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
-    addLogEntry(`🤖 Hedge Bot started on ${marketSelect.options[marketSelect.selectedIndex]?.textContent || currentSymbol}`, 'system');
-    addLogEntry(`📊 Strategy: Parallel HIGHER/LOWER trades with ${durationInput.value} ticks duration`, 'system');
-    addLogEntry(`💰 Stake: $${stakeInput.value} each | Offset: ${offsetInput.value} points`, 'system');
+    addLogEntry(`🤖 Bot started on ${marketSelect.options[marketSelect.selectedIndex]?.textContent || currentSymbol}`, 'system');
+    addLogEntry(`📊 Strategy: HIGHER (CALL) trades with ${durationInput.value} ticks duration`, 'system');
+    addLogEntry(`💰 Stake: $${stakeInput.value} | Offset: ${offsetInput.value} points`, 'system');
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     
-    await placeHedgeTrade();
+    await placeTrade();
 }
 
 function stopBot() {
@@ -431,40 +372,29 @@ function stopBot() {
     startBtn.disabled = false;
     stopBtn.disabled = true;
     tradingLock = false;
-    activeProposalCount = 0;
-    pendingProposals = { higher: null, lower: null };
-    proposalMap.clear();
     addLogEntry('🛑 Bot stopped', 'system');
-    
-    if (autoCloseInterval) {
-        clearInterval(autoCloseInterval);
-        autoCloseInterval = null;
-    }
 }
 
 async function emergencyStop() {
     addLogEntry('⚠️⚠️⚠️ EMERGENCY STOP ACTIVATED ⚠️⚠️⚠️', 'system');
-    addLogEntry('🔒 Closing all positions immediately...', 'system');
+    addLogEntry('🔒 Closing position immediately...', 'system');
     
-    if (currentPositions.higher && currentPositions.higher.id) {
-        await closeContract('higher', true);
-    }
-    if (currentPositions.lower && currentPositions.lower.id) {
-        await closeContract('lower', true);
+    if (currentPosition && currentPosition.id) {
+        await closeContract(true);
     }
     stopBot();
 }
 
-async function placeHedgeTrade() {
+async function placeTrade() {
     if (!isBotRunning) return;
     if (tradingLock) {
-        addLogEntry('⏳ Waiting for previous trade cycle to complete...', 'system');
-        setTimeout(placeHedgeTrade, 2000);
+        addLogEntry('⏳ Waiting for previous trade to complete...', 'system');
+        setTimeout(placeTrade, 2000);
         return;
     }
     
     if (!currentPrice) {
-        setTimeout(placeHedgeTrade, 1000);
+        setTimeout(placeTrade, 1000);
         return;
     }
     
@@ -473,27 +403,15 @@ async function placeHedgeTrade() {
     const stake = parseFloat(stakeInput.value);
     const duration = parseInt(durationInput.value);
     const offset = parseFloat(offsetInput.value);
-    
-    const higherBarrier = `+${offset.toFixed(4)}`;
-    const lowerBarrier = `-${offset.toFixed(4)}`;
+    const barrier = `+${offset.toFixed(4)}`;
     
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
-    addLogEntry(`🎯 Placing Parallel Hedge Trade at ${currentPrice.toFixed(2)}`, 'system');
-    addLogEntry(`📈 HIGHER (CALL): Barrier ${higherBarrier} - Price must rise by ${offset} points`, 'system');
-    addLogEntry(`📉 LOWER (PUT): Barrier ${lowerBarrier} - Price must fall by ${offset} points`, 'system');
-    addLogEntry(`⏱️ Duration: ${duration} ticks | 💰 Stake: $${stake} each`, 'system');
+    addLogEntry(`🎯 Placing HIGHER (CALL) Trade at ${currentPrice.toFixed(2)}`, 'system');
+    addLogEntry(`📈 Barrier: ${barrier} - Price must rise by ${offset} points`, 'system');
+    addLogEntry(`⏱️ Duration: ${duration} ticks | 💰 Stake: $${stake}`, 'system');
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     
-    activeProposalCount = 2;
-    pendingProposals = { higher: null, lower: null };
-    
-    // Create a unique timestamp for both proposals to ensure they're linked
-    const baseTimestamp = Date.now();
-    
-    // Send both proposals in the same event loop cycle
-    // Higher (CALL) proposal
-    const higherReqId = baseTimestamp;
-    proposalMap.set(higherReqId, 'higher');
+    // Send proposal
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -503,140 +421,82 @@ async function placeHedgeTrade() {
         duration: duration,
         duration_unit: "t",
         symbol: currentSymbol,
-        barrier: higherBarrier,
-        req_id: higherReqId
+        barrier: barrier,
+        req_id: Date.now()
     }));
-    
-    // Lower (PUT) proposal - using same base timestamp + 1 to ensure unique but still immediate
-    const lowerReqId = baseTimestamp + 1;
-    proposalMap.set(lowerReqId, 'lower');
-    ws.send(JSON.stringify({
-        proposal: 1,
-        amount: stake,
-        basis: 'stake',
-        contract_type: "PUT",
-        currency: "USD",
-        duration: duration,
-        duration_unit: "t",
-        symbol: currentSymbol,
-        barrier: lowerBarrier,
-        req_id: lowerReqId
-    }));
-    
-    addLogEntry(`📤 Sent both HIGHER and LOWER proposals simultaneously`, 'system');
 }
 
-function handleProposalResponse(proposal, direction) {
-    if (!direction) {
-        addLogEntry(`❌ Cannot determine direction for proposal`, 'system');
-        activeProposalCount--;
-        if (activeProposalCount === 0) {
-            tradingLock = false;
-            setTimeout(() => placeHedgeTrade(), 2000);
-        }
-        return;
-    }
-    
+function handleProposalResponse(proposal) {
     if (proposal && proposal.id) {
         const payout = parseFloat(proposal.payout);
         const stake = parseFloat(stakeInput.value);
         const profitPotential = payout - stake;
         const profitPercent = (profitPotential / stake) * 100;
         
-        addLogEntry(`📝 ${direction.toUpperCase()} Proposal: Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
+        addLogEntry(`📝 Proposal: Payout $${payout.toFixed(2)} | Profit: $${profitPotential.toFixed(2)} (${profitPercent.toFixed(1)}%)`, 'system');
         
-        const minPayout = TRADING_CONFIG.minPayout;
+        const minPayout = 2.3; // Minimum profit in USD
         if (profitPotential >= minPayout) {
-            addLogEntry(`✅ ${direction.toUpperCase()} proposal accepted - purchasing contract...`, 'success');
-            pendingProposals[direction] = proposal;
-            
+            addLogEntry(`✅ Proposal accepted - purchasing contract...`, 'success');
             ws.send(JSON.stringify({
                 buy: proposal.id,
                 price: proposal.ask_price,
                 req_id: Date.now()
             }));
         } else {
-            addLogEntry(`⚠️ ${direction.toUpperCase()} proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
-            activeProposalCount--;
-            if (activeProposalCount === 0) {
-                addLogEntry(`❌ Both proposals rejected. Retrying...`, 'system');
-                tradingLock = false;
-                setTimeout(() => placeHedgeTrade(), 2000);
-            }
+            addLogEntry(`⚠️ Proposal rejected: Profit $${profitPotential.toFixed(2)} below minimum $${minPayout.toFixed(2)}`, 'system');
+            tradingLock = false;
+            setTimeout(() => placeTrade(), 2000);
         }
     } else if (proposal && proposal.error) {
-        addLogEntry(`❌ ${direction.toUpperCase()} proposal error: ${proposal.error.message}`, 'system');
-        activeProposalCount--;
-        if (activeProposalCount === 0) {
-            tradingLock = false;
-            setTimeout(() => placeHedgeTrade(), 2000);
-        }
+        addLogEntry(`❌ Proposal error: ${proposal.error.message}`, 'system');
+        tradingLock = false;
+        setTimeout(() => placeTrade(), 2000);
     }
 }
 
 function handleBuyResponse(buy) {
-    const direction = buy.contract_type === 'CALL' ? 'higher' : 'lower';
-    
-    // Only accept if this direction doesn't already have a contract
-    if (currentPositions[direction]) {
-        addLogEntry(`⚠️ ${direction.toUpperCase()} contract already exists. Skipping duplicate.`, 'system');
-        activeProposalCount--;
+    if (currentPosition) {
+        addLogEntry(`⚠️ Contract already exists. Skipping duplicate.`, 'system');
         return;
     }
     
-    currentPositions[direction] = {
+    currentPosition = {
         id: buy.contract_id,
         entryPrice: buy.buy_price,
         barrier: buy.barrier,
         duration: buy.duration,
         buyTimestamp: Date.now(),
-        contractType: buy.contract_type,
-        profit: 0,
-        profitPercent: 0
+        profit: 0
     };
     
-    addLogEntry(`✅ ${direction.toUpperCase()} contract purchased! ID: ${buy.contract_id} | Price: $${buy.buy_price}`, 'success');
+    addLogEntry(`✅ Contract purchased! ID: ${buy.contract_id} | Price: $${buy.buy_price}`, 'success');
     
     // Update display
-    const barrierEl = document.getElementById(`${direction}-barrier`);
+    const barrierEl = document.getElementById('higher-barrier');
     if (barrierEl) barrierEl.textContent = buy.barrier;
     
-    const entryEl = document.getElementById(`${direction}-entry`);
+    const entryEl = document.getElementById('higher-entry');
     if (entryEl) entryEl.textContent = `$${buy.buy_price}`;
     
-    const currentEl = document.getElementById(`${direction}-current`);
+    const currentEl = document.getElementById('higher-current');
     if (currentEl) currentEl.textContent = `$${buy.buy_price}`;
     
-    if (closeHigherBtn) closeHigherBtn.disabled = false;
-    if (closeLowerBtn) closeLowerBtn.disabled = false;
-    if (closeBothBtn) closeBothBtn.disabled = false;
+    if (closeBtn) closeBtn.disabled = false;
     
     ws.send(JSON.stringify({
         proposal_open_contract: 1,
         contract_id: buy.contract_id,
         req_id: Date.now()
     }));
-    
-    contractSubscriptionIds.push(buy.contract_id);
-    activeProposalCount--;
-    
-    // Check if both contracts are now purchased
-    if (currentPositions.higher && currentPositions.lower) {
-        addLogEntry(`🎉 Both HIGHER and LOWER contracts are now active!`, 'success');
-    }
 }
 
 function updateContractValue(contract) {
-    let direction = null;
-    if (currentPositions.higher && currentPositions.higher.id === contract.contract_id) {
-        direction = 'higher';
-    } else if (currentPositions.lower && currentPositions.lower.id === contract.contract_id) {
-        direction = 'lower';
-    } else {
+    if (!currentPosition || currentPosition.id !== contract.contract_id) {
         return;
     }
     
-    const buyPrice = currentPositions[direction]?.entryPrice || contract.buy_price || 0;
+    const buyPrice = currentPosition.entryPrice;
     let profit;
 
     if (contract.profit !== undefined && contract.profit !== null) {
@@ -650,19 +510,14 @@ function updateContractValue(contract) {
     const profitPercent = buyPrice > 0 ? (profit / buyPrice) * 100 : 0;
     const currentValue = buyPrice + profit;
     
-    if (currentPositions[direction]) {
-        currentPositions[direction].profit = profit;
-        currentPositions[direction].profitPercent = profitPercent;
-        currentPositions[direction].currentValue = currentValue;
-    }
+    currentPosition.profit = profit;
     
-    updatePositionDisplay(direction, currentValue, profit, profitPercent);
-    updateCombinedValues();
+    updatePositionDisplay(currentValue, profit, profitPercent);
 }
 
-function updatePositionDisplay(direction, value, profit, profitPercent) {
-    const currentEl = document.getElementById(`${direction}-current`);
-    const pnlEl = document.getElementById(`${direction}-pnl`);
+function updatePositionDisplay(value, profit, profitPercent) {
+    const currentEl = document.getElementById('higher-current');
+    const pnlEl = document.getElementById('higher-pnl');
     
     if (currentEl) {
         currentEl.textContent = `$${value.toFixed(2)}`;
@@ -671,73 +526,29 @@ function updatePositionDisplay(direction, value, profit, profitPercent) {
         pnlEl.textContent = `${profit >= 0 ? '+' : ''}$${profit.toFixed(2)} (${profitPercent.toFixed(1)}%)`;
         pnlEl.style.color = profit >= 0 ? '#00ff88' : '#ff4444';
     }
-}
-
-function updateCombinedValues() {
-    const higherProfit = currentPositions.higher?.profit || 0;
-    const lowerProfit = currentPositions.lower?.profit || 0;
-    const netProfit = higherProfit + lowerProfit;
     
+    // Update net profit display
     const netProfitEl = document.getElementById('net-profit');
     if (netProfitEl) {
-        netProfitEl.textContent = `${netProfit >= 0 ? '+' : ''}$${netProfit.toFixed(2)}`;
-        netProfitEl.style.color = netProfit >= 0 ? '#00ff88' : '#ff4444';
+        netProfitEl.textContent = `${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}`;
+        netProfitEl.style.color = profit >= 0 ? '#00ff88' : '#ff4444';
     }
 }
 
-async function closeContract(direction, isEmergency = false) {
-    const position = currentPositions[direction];
-    if (!position || !position.id) {
-        addLogEntry(`⚠️ No active ${direction.toUpperCase()} contract to close`, 'system');
+async function closeContract(isEmergency = false) {
+    if (!currentPosition || !currentPosition.id) {
+        addLogEntry(`⚠️ No active contract to close`, 'system');
         return;
     }
     
-    const profit = position.profit || 0;
-    addLogEntry(`🔒 Closing ${direction.toUpperCase()} contract (ID: ${position.id}) | Current P/L: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}${isEmergency ? ' - EMERGENCY' : ''}`, 'system');
+    const profit = currentPosition.profit || 0;
+    addLogEntry(`🔒 Closing contract (ID: ${currentPosition.id}) | Current P/L: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}${isEmergency ? ' - EMERGENCY' : ''}`, 'system');
     
     ws.send(JSON.stringify({ 
-        sell: position.id,
+        sell: currentPosition.id,
         price: 0,
         req_id: Date.now()
     }));
-}
-
-async function closeBothContracts() {
-    addLogEntry(`🔒 Closing both contracts...`, 'system');
-    
-    if (currentPositions.higher && currentPositions.higher.id) {
-        await closeContract('higher');
-    }
-    if (currentPositions.lower && currentPositions.lower.id) {
-        await closeContract('lower');
-    }
-    
-    if (autoCloseInterval) {
-        clearInterval(autoCloseInterval);
-        autoCloseInterval = null;
-    }
-    
-    setTimeout(() => {
-        currentPositions = { higher: null, lower: null };
-        previousValues = { higher: 0, lower: 0 };
-        
-        if (closeHigherBtn) closeHigherBtn.disabled = true;
-        if (closeLowerBtn) closeLowerBtn.disabled = true;
-        if (closeBothBtn) closeBothBtn.disabled = true;
-        
-        const resetEls = ['higher-current', 'lower-current', 'higher-pnl', 'lower-pnl', 'net-profit'];
-        resetEls.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.textContent = '-';
-        });
-        
-        tradingLock = false;
-        
-        if (isBotRunning) {
-            addLogEntry(`🔄 Preparing next hedge trade cycle in 3 seconds...`, 'system');
-            setTimeout(() => placeHedgeTrade(), 3000);
-        }
-    }, 1000);
 }
 
 function handleSellResponse(sell) {
@@ -809,9 +620,7 @@ function enableControls(enabled) {
     inputs.forEach(input => { if (input) input.disabled = !enabled; });
     if (startBtn) startBtn.disabled = !enabled;
     if (emergencyBtn) emergencyBtn.disabled = !enabled;
-    if (closeHigherBtn) closeHigherBtn.disabled = !enabled;
-    if (closeLowerBtn) closeLowerBtn.disabled = !enabled;
-    if (closeBothBtn) closeBothBtn.disabled = !enabled;
+    if (closeBtn) closeBtn.disabled = !enabled;
 }
 
 function addLogEntry(message, type = 'system') {
