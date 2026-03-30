@@ -1,7 +1,6 @@
 // ============================================
-// DERIV HEDGE BOT - PARALLEL TRADING SYSTEM
-// Places simultaneous HIGHER and LOWER trades
-// Target: $0.20-0.50 net profit per cycle
+// DERIV HEDGE BOT - PARALLEL TRADING SYSTEM v2
+// Fixed: Proper parallel trade placement
 // ============================================
 
 // ===== CONFIGURATION =====
@@ -13,8 +12,10 @@ let currentPrice = null;
 let currentSymbol = 'R_75';
 let tickHistory = [];
 let lastDigits = [];
-let activeProposals = 0;
-let pendingTrades = { higher: null, lower: null };
+let pendingProposals = {
+    higher: { sent: false, proposalId: null, requestId: null },
+    lower: { sent: false, proposalId: null, requestId: null }
+};
 let currentPositions = { higher: null, lower: null };
 let sessionStats = {
     totalCycles: 0,
@@ -40,6 +41,9 @@ const closeLowerBtn = document.getElementById('close-lower');
 const closeBothBtn = document.getElementById('close-both');
 const pauseTicksBtn = document.getElementById('pause-ticks-btn');
 
+// Auto-close toggle
+let autoCloseToggle = true;
+
 // ===== Helper Functions =====
 function addLogEntry(message, type = 'system') {
     const logContainer = document.getElementById('trade-log');
@@ -51,7 +55,7 @@ function addLogEntry(message, type = 'system') {
     entry.innerHTML = `<span style="color:#666;">[${timestamp}]</span> ${message}`;
     logContainer.insertBefore(entry, logContainer.firstChild);
     
-    while (logContainer.children.length > 150) {
+    while (logContainer.children.length > 200) {
         logContainer.removeChild(logContainer.lastChild);
     }
 }
@@ -71,13 +75,18 @@ function updateStatsDisplay() {
         ? (sessionStats.winningCycles / sessionStats.totalCycles * 100).toFixed(1) 
         : 0;
     
-    document.getElementById('total-cycles').textContent = sessionStats.totalCycles;
-    document.getElementById('winning-cycles').textContent = sessionStats.winningCycles;
-    document.getElementById('win-rate').textContent = `${winRate}%`;
-    
+    const totalCyclesEl = document.getElementById('total-cycles');
+    const winningCyclesEl = document.getElementById('winning-cycles');
+    const winRateEl = document.getElementById('win-rate');
     const totalProfitEl = document.getElementById('total-profit');
-    totalProfitEl.textContent = `$${sessionStats.totalNetProfit.toFixed(2)}`;
-    totalProfitEl.className = `stat-value ${sessionStats.totalNetProfit >= 0 ? 'profit' : 'loss'}`;
+    
+    if (totalCyclesEl) totalCyclesEl.textContent = sessionStats.totalCycles;
+    if (winningCyclesEl) winningCyclesEl.textContent = sessionStats.winningCycles;
+    if (winRateEl) winRateEl.textContent = `${winRate}%`;
+    if (totalProfitEl) {
+        totalProfitEl.textContent = `$${sessionStats.totalNetProfit.toFixed(2)}`;
+        totalProfitEl.className = `stat-value ${sessionStats.totalNetProfit >= 0 ? 'profit' : 'loss'}`;
+    }
 }
 
 function updateCombinedValues() {
@@ -86,38 +95,47 @@ function updateCombinedValues() {
     const netProfit = higherProfit + lowerProfit;
     const combinedValue = (currentPositions.higher?.currentValue || 0) + (currentPositions.lower?.currentValue || 0);
     
-    document.getElementById('combined-value').textContent = `$${combinedValue.toFixed(2)}`;
-    
+    const combinedValueEl = document.getElementById('combined-value');
     const netProfitEl = document.getElementById('net-profit');
-    netProfitEl.textContent = `${netProfit >= 0 ? '+' : ''}$${netProfit.toFixed(2)}`;
-    netProfitEl.style.color = netProfit >= 0 ? '#00ff88' : '#ff4444';
+    
+    if (combinedValueEl) combinedValueEl.textContent = `$${combinedValue.toFixed(2)}`;
+    if (netProfitEl) {
+        netProfitEl.textContent = `${netProfit >= 0 ? '+' : ''}$${netProfit.toFixed(2)}`;
+        netProfitEl.style.color = netProfit >= 0 ? '#00ff88' : '#ff4444';
+    }
     
     // Update progress bar
     const target = parseFloat(profitTargetInput.value);
     if (target > 0) {
         const progress = Math.min((netProfit / target) * 100, 100);
-        document.getElementById('progress-fill').style.width = `${progress}%`;
-        document.getElementById('progress-text').textContent = `${Math.round(progress)}%`;
+        const progressFill = document.getElementById('progress-fill');
+        const progressText = document.getElementById('progress-text');
+        if (progressFill) progressFill.style.width = `${progress}%`;
+        if (progressText) progressText.textContent = `${Math.round(progress)}%`;
     }
     
     // Auto-close if target reached
-    if (autoCloseToggle && autoCloseToggle.checked && netProfit >= target && target > 0) {
+    if (autoCloseToggle && netProfit >= target && target > 0 && (currentPositions.higher || currentPositions.lower)) {
         addLogEntry(`🎯 Target reached! Net profit $${netProfit.toFixed(2)} >= $${target.toFixed(2)}`, 'win');
         closeBothContracts();
     }
 }
 
 function updatePositionDisplay(direction, position) {
-    const prefix = direction;
-    const profitClass = position.profit >= 0 ? 'gain' : 'loss';
+    const entryEl = document.getElementById(`${direction}-entry`);
+    const currentEl = document.getElementById(`${direction}-current`);
+    const ticksEl = document.getElementById(`${direction}-ticks`);
+    const pnlEl = document.getElementById(`${direction}-pnl`);
+    const barrierEl = document.getElementById(`${direction}-barrier`);
     
-    document.getElementById(`${prefix}-entry`).textContent = `$${position.entryPrice.toFixed(2)}`;
-    document.getElementById(`${prefix}-current`).textContent = `$${position.currentValue.toFixed(2)}`;
-    document.getElementById(`${prefix}-ticks`).textContent = position.ticksLeft || 0;
-    
-    const pnlEl = document.getElementById(`${prefix}-pnl`);
-    pnlEl.textContent = `${position.profit >= 0 ? '+' : ''}$${position.profit.toFixed(2)}`;
-    pnlEl.className = profitClass;
+    if (entryEl) entryEl.textContent = `$${position.entryPrice.toFixed(2)}`;
+    if (currentEl) currentEl.textContent = `$${position.currentValue.toFixed(2)}`;
+    if (ticksEl) ticksEl.textContent = position.ticksLeft || 0;
+    if (barrierEl) barrierEl.textContent = position.barrier;
+    if (pnlEl) {
+        pnlEl.textContent = `${position.profit >= 0 ? '+' : ''}$${position.profit.toFixed(2)}`;
+        pnlEl.className = position.profit >= 0 ? 'gain' : 'loss';
+    }
     
     // Update tick indicators
     updateTickIndicators(direction, position);
@@ -222,7 +240,6 @@ function handleMessage(data) {
         ws.send(JSON.stringify({ ticks: currentSymbol, subscribe: 1, req_id: Date.now() }));
         ws.send(JSON.stringify({ balance: 1, req_id: Date.now() }));
         
-        // Update account switch buttons
         if (accountType === 'demo') {
             demoBtn.classList.add('active');
             realBtn.classList.remove('active');
@@ -277,12 +294,14 @@ function handleTick(tick) {
     // Update last digit
     const priceStr = currentPrice.toFixed(2);
     const lastDigit = priceStr.slice(-1);
-    document.getElementById('last-digit').textContent = lastDigit;
+    const lastDigitEl = document.getElementById('last-digit');
+    if (lastDigitEl) lastDigitEl.textContent = lastDigit;
     
     // Update last 10 digits
     lastDigits.unshift(lastDigit);
     if (lastDigits.length > 10) lastDigits.pop();
-    document.getElementById('last-ten-digits').textContent = lastDigits.join(' ');
+    const lastTenEl = document.getElementById('last-ten-digits');
+    if (lastTenEl) lastTenEl.textContent = lastDigits.join(' ');
     
     // Update tick display if not paused
     if (!isTickDisplayPaused) updateTickDisplay();
@@ -312,23 +331,28 @@ function updateTickDisplay() {
 
 function toggleTickDisplay() {
     isTickDisplayPaused = !isTickDisplayPaused;
-    pauseTicksBtn.textContent = isTickDisplayPaused ? 'Resume' : 'Pause';
+    if (pauseTicksBtn) {
+        pauseTicksBtn.textContent = isTickDisplayPaused ? 'Resume' : 'Pause';
+    }
     if (!isTickDisplayPaused) updateTickDisplay();
 }
 
 // ===== Core Trading Logic =====
 async function placeHedgeTrade() {
-    if (!isBotRunning) return;
+    if (!isBotRunning) {
+        addLogEntry('Bot is not running, stopping trade cycle', 'system');
+        return;
+    }
     if (tradingLock) {
-        setTimeout(placeHedgeTrade, 1000);
+        setTimeout(placeHedgeTrade, 2000);
         return;
     }
     if (currentPositions.higher || currentPositions.lower) {
-        setTimeout(placeHedgeTrade, 1000);
+        setTimeout(placeHedgeTrade, 2000);
         return;
     }
     if (!currentPrice) {
-        setTimeout(placeHedgeTrade, 500);
+        setTimeout(placeHedgeTrade, 1000);
         return;
     }
     
@@ -346,15 +370,18 @@ async function placeHedgeTrade() {
     addLogEntry(`🎯 Placing PARALLEL HEDGE TRADE at ${currentPrice.toFixed(2)}`, 'system');
     addLogEntry(`📈 HIGHER: ${higherBarrier} | 📉 LOWER: ${lowerBarrier}`, 'system');
     addLogEntry(`⏱️ Duration: ${duration} ticks | 💰 Stake: $${stake} each`, 'system');
-    addLogEntry(`🎯 Target net profit: $${(stake * (minPayout - 2)).toFixed(2)} per side win`, 'system');
+    addLogEntry(`🎯 Min payout needed: ${minPayout}x ($${minPayout.toFixed(2)} net profit)`, 'system');
     addLogEntry(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, 'system');
     
-    // Store pending trades
-    pendingTrades = { higher: null, lower: null };
-    activeProposals = 2;
+    // Reset pending proposals
+    pendingProposals = {
+        higher: { sent: true, proposalId: null, requestId: Date.now() + '_higher' },
+        lower: { sent: true, proposalId: null, requestId: Date.now() + '_lower' }
+    };
     
     // Send HIGHER (CALL) proposal
     const higherReqId = Date.now();
+    addLogEntry(`📤 Sending HIGHER (CALL) proposal...`, 'system');
     ws.send(JSON.stringify({
         proposal: 1,
         amount: stake,
@@ -368,10 +395,11 @@ async function placeHedgeTrade() {
         req_id: higherReqId
     }));
     
-    // Send LOWER (PUT) proposal after 200ms
+    // Send LOWER (PUT) proposal after 500ms to ensure both are processed
     setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN && isBotRunning) {
             const lowerReqId = Date.now();
+            addLogEntry(`📤 Sending LOWER (PUT) proposal...`, 'system');
             ws.send(JSON.stringify({
                 proposal: 1,
                 amount: stake,
@@ -385,7 +413,7 @@ async function placeHedgeTrade() {
                 req_id: lowerReqId
             }));
         }
-    }, 200);
+    }, 500);
 }
 
 function handleProposalResponse(proposal) {
@@ -395,7 +423,7 @@ function handleProposalResponse(proposal) {
     const netProfit = payout - stake;
     const minPayout = parseFloat(minPayoutInput.value);
     
-    addLogEntry(`📝 ${direction.toUpperCase()} proposal: Payout $${payout.toFixed(2)} | Net $${netProfit.toFixed(2)}`, 'system');
+    addLogEntry(`📝 ${direction.toUpperCase()} proposal: Payout $${payout.toFixed(2)} | Net $${netProfit.toFixed(2)} (${(payout).toFixed(2)}x)`, 'system');
     
     if (netProfit >= minPayout) {
         addLogEntry(`✅ ${direction.toUpperCase()} accepted - purchasing...`, 'success');
@@ -406,10 +434,13 @@ function handleProposalResponse(proposal) {
         }));
     } else {
         addLogEntry(`❌ ${direction.toUpperCase()} rejected: Net $${netProfit.toFixed(2)} < min $${minPayout.toFixed(2)}`, 'error');
-        activeProposals--;
-        if (activeProposals === 0) {
+        
+        // If both proposals are rejected, unlock trading
+        if (!currentPositions.higher && !currentPositions.lower) {
             tradingLock = false;
-            setTimeout(() => placeHedgeTrade(), 2000);
+            if (isBotRunning) {
+                setTimeout(() => placeHedgeTrade(), 3000);
+            }
         }
     }
 }
@@ -418,8 +449,10 @@ function handleBuyResponse(buy) {
     const direction = buy.contract_type === 'CALL' ? 'higher' : 'lower';
     
     // Update status display
-    document.getElementById(`${direction}-status`).textContent = 'Active';
-    document.getElementById(`${direction}-barrier`).textContent = buy.barrier;
+    const statusEl = document.getElementById(`${direction}-status`);
+    const barrierEl = document.getElementById(`${direction}-barrier`);
+    if (statusEl) statusEl.textContent = 'Active';
+    if (barrierEl) barrierEl.textContent = buy.barrier;
     
     currentPositions[direction] = {
         id: buy.contract_id,
@@ -434,7 +467,7 @@ function handleBuyResponse(buy) {
         profit: 0
     };
     
-    addLogEntry(`✅ ${direction.toUpperCase()} purchased! ID: ${buy.contract_id} | Entry: $${buy.buy_price}`, 'success');
+    addLogEntry(`✅ ${direction.toUpperCase()} PURCHASED! ID: ${buy.contract_id} | Entry: $${buy.buy_price}`, 'success');
     
     // Subscribe to contract updates
     ws.send(JSON.stringify({
@@ -443,14 +476,13 @@ function handleBuyResponse(buy) {
         req_id: Date.now()
     }));
     
-    activeProposals--;
-    
     // Enable close buttons if both positions exist
     if (currentPositions.higher && currentPositions.lower) {
-        closeHigherBtn.disabled = false;
-        closeLowerBtn.disabled = false;
-        closeBothBtn.disabled = false;
-        addLogEntry(`🎯 Both positions active! Monitoring...`, 'success');
+        if (closeHigherBtn) closeHigherBtn.disabled = false;
+        if (closeLowerBtn) closeLowerBtn.disabled = false;
+        if (closeBothBtn) closeBothBtn.disabled = false;
+        addLogEntry(`🎯 BOTH POSITIONS ACTIVE! Monitoring for profit...`, 'success');
+        addLogEntry(`💰 Target net profit: $${(currentPositions.higher.profit + currentPositions.lower.profit).toFixed(2)}`, 'system');
     }
 }
 
@@ -469,7 +501,6 @@ function handleContractUpdate(contract) {
     
     const currentValue = contract.sell_price || contract.current_spot || contract.buy_price || 0;
     const profit = currentValue - position.entryPrice;
-    const profitPercent = (profit / position.entryPrice) * 100;
     
     // Calculate ticks left
     let ticksLeft = 0;
@@ -486,7 +517,6 @@ function handleContractUpdate(contract) {
     position.ticksLeft = ticksLeft;
     position.ticksElapsed = ticksElapsed;
     position.profit = profit;
-    position.profitPercent = profitPercent;
     
     // Update display
     updatePositionDisplay(direction, position);
@@ -505,19 +535,20 @@ function handleContractUpdate(contract) {
 }
 
 function handleContractClosed(direction, profit) {
-    addLogEntry(`📊 ${direction.toUpperCase()} closed: ${profit >= 0 ? 'WIN' : 'LOSS'} $${profit.toFixed(2)}`, profit >= 0 ? 'win' : 'loss');
+    addLogEntry(`📊 ${direction.toUpperCase()} CLOSED: ${profit >= 0 ? '✅ WIN' : '❌ LOSS'} $${profit.toFixed(2)}`, profit >= 0 ? 'win' : 'loss');
     
     // Reset position
     currentPositions[direction] = null;
-    document.getElementById(`${direction}-status`).textContent = 'Closed';
+    const statusEl = document.getElementById(`${direction}-status`);
+    if (statusEl) statusEl.textContent = 'Closed';
     
     // Disable close buttons
     if (!currentPositions.higher && !currentPositions.lower) {
-        closeHigherBtn.disabled = true;
-        closeLowerBtn.disabled = true;
-        closeBothBtn.disabled = true;
+        if (closeHigherBtn) closeHigherBtn.disabled = true;
+        if (closeLowerBtn) closeLowerBtn.disabled = true;
+        if (closeBothBtn) closeBothBtn.disabled = true;
         
-        // Update cycle stats
+        // Calculate net cycle profit
         const higherProfit = currentPositions.higher?.profit || 0;
         const lowerProfit = currentPositions.lower?.profit || 0;
         const netCycleProfit = higherProfit + lowerProfit;
@@ -539,18 +570,19 @@ function handleContractClosed(direction, profit) {
         createTickIndicators(parseInt(durationInput.value));
         
         if (isBotRunning) {
-            setTimeout(() => placeHedgeTrade(), 2000);
+            addLogEntry(`🔄 Next trade cycle in 3 seconds...`, 'system');
+            setTimeout(() => placeHedgeTrade(), 3000);
         }
     }
 }
 
 function handleSellResponse(sell) {
     const profit = sell.sold_for - sell.bought_for;
-    addLogEntry(`💰 Sold for $${sell.sold_for.toFixed(2)} | ${profit >= 0 ? 'Profit' : 'Loss'}: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}`, profit >= 0 ? 'win' : 'loss');
+    addLogEntry(`💰 Sold contract for $${sell.sold_for.toFixed(2)} | ${profit >= 0 ? 'Profit' : 'Loss'}: ${profit >= 0 ? '+' : ''}$${profit.toFixed(2)}`, profit >= 0 ? 'win' : 'loss');
 }
 
 // ===== Contract Management =====
-async function closeContract(direction) {
+function closeContract(direction) {
     const position = currentPositions[direction];
     if (!position || !position.id) {
         addLogEntry(`⚠️ No active ${direction.toUpperCase()} contract`, 'error');
@@ -561,20 +593,20 @@ async function closeContract(direction) {
     ws.send(JSON.stringify({ sell: position.id, price: 0, req_id: Date.now() }));
 }
 
-async function closeBothContracts() {
+function closeBothContracts() {
     addLogEntry(`🔒 Closing BOTH contracts...`, 'system');
-    if (currentPositions.higher) await closeContract('higher');
-    if (currentPositions.lower) await closeContract('lower');
+    if (currentPositions.higher) closeContract('higher');
+    if (currentPositions.lower) closeContract('lower');
 }
 
 // ===== Bot Controls =====
 function startBot() {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-        addLogEntry('Please connect to Deriv first', 'error');
+        addLogEntry('❌ Please connect to Deriv first', 'error');
         return;
     }
     if (!currentPrice) {
-        addLogEntry('Waiting for price feed...', 'system');
+        addLogEntry('⏳ Waiting for price feed...', 'system');
         setTimeout(startBot, 2000);
         return;
     }
@@ -586,14 +618,30 @@ function startBot() {
     
     // Reset positions display
     currentPositions = { higher: null, lower: null };
-    document.getElementById('higher-status').textContent = 'Waiting';
-    document.getElementById('lower-status').textContent = 'Waiting';
+    const higherStatus = document.getElementById('higher-status');
+    const lowerStatus = document.getElementById('lower-status');
+    if (higherStatus) higherStatus.textContent = 'Waiting';
+    if (lowerStatus) lowerStatus.textContent = 'Waiting';
+    
+    // Reset position values
+    const resetFields = ['higher-entry', 'higher-current', 'higher-ticks', 'higher-pnl',
+                         'lower-entry', 'lower-current', 'lower-ticks', 'lower-pnl',
+                         'higher-barrier', 'lower-barrier'];
+    resetFields.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = '-';
+    });
     
     // Create tick indicators
     createTickIndicators(parseInt(durationInput.value));
     
-    addLogEntry(`🚀 Hedge Bot started on ${marketSelect.value}`, 'success');
-    addLogEntry(`💡 Target net profit per win: $${(parseFloat(stakeInput.value) * (parseFloat(minPayoutInput.value) - 2)).toFixed(2)}`, 'system');
+    const stake = parseFloat(stakeInput.value);
+    const minPayout = parseFloat(minPayoutInput.value);
+    const targetNet = stake * (minPayout - 2);
+    
+    addLogEntry(`🚀 HEDGE BOT STARTED on ${marketSelect.value}`, 'success');
+    addLogEntry(`💡 Target net profit per win side: $${targetNet.toFixed(2)}`, 'system');
+    addLogEntry(`💡 Total risk per cycle: $${(stake * 2).toFixed(2)}`, 'system');
     
     placeHedgeTrade();
 }
@@ -616,24 +664,24 @@ function emergencyStop() {
     if (currentPositions.higher) closeContract('higher');
     if (currentPositions.lower) closeContract('lower');
     
-    addLogEntry(`🔒 All positions closed`, 'success');
+    addLogEntry(`🔒 Emergency stop complete - all positions closed`, 'success');
 }
 
 // ===== Connection Management =====
 function connectWithToken() {
     const token = document.getElementById('api-token').value.trim();
     if (!token) {
-        addLogEntry('Please enter your API token', 'error');
+        addLogEntry('❌ Please enter your API token', 'error');
         return;
     }
-    addLogEntry('Connecting to Deriv...', 'system');
+    addLogEntry('🔌 Connecting to Deriv...', 'system');
     localStorage.setItem('deriv_token', token);
     connectWebSocket(token);
 }
 
 function switchAccount(type) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    addLogEntry(`Switching to ${type.toUpperCase()} account...`, 'system');
+    addLogEntry(`🔄 Switching to ${type.toUpperCase()} account...`, 'system');
     ws.send(JSON.stringify({ switch_account: type === 'demo' ? 1 : 0, req_id: Date.now() }));
 }
 
@@ -643,13 +691,19 @@ function updateAuthStatus(connected) {
     const accountSwitch = document.getElementById('account-switch');
     
     if (connected) {
-        authStatus.className = 'auth-status connected';
-        authStatus.querySelector('span:last-child').textContent = 'Connected';
+        if (authStatus) {
+            authStatus.className = 'auth-status connected';
+            const statusSpan = authStatus.querySelector('span:last-child');
+            if (statusSpan) statusSpan.textContent = 'Connected';
+        }
         if (tokenSection) tokenSection.style.display = 'none';
         if (accountSwitch) accountSwitch.style.display = 'flex';
     } else {
-        authStatus.className = 'auth-status';
-        authStatus.querySelector('span:last-child').textContent = 'Disconnected';
+        if (authStatus) {
+            authStatus.className = 'auth-status';
+            const statusSpan = authStatus.querySelector('span:last-child');
+            if (statusSpan) statusSpan.textContent = 'Disconnected';
+        }
         if (tokenSection) tokenSection.style.display = 'flex';
         if (accountSwitch) accountSwitch.style.display = 'none';
     }
@@ -660,21 +714,32 @@ function enableControls(enabled) {
     inputs.forEach(input => { if (input) input.disabled = !enabled; });
     if (emergencyBtn) emergencyBtn.disabled = !enabled;
     if (!enabled) {
-        startBtn.disabled = true;
-        stopBtn.disabled = true;
+        if (startBtn) startBtn.disabled = true;
+        if (stopBtn) stopBtn.disabled = true;
     }
 }
 
 function onMarketChange() {
     currentSymbol = marketSelect.value;
-    document.getElementById('market-symbol').textContent = currentSymbol;
-    addLogEntry(`Switched to ${marketSelect.options[marketSelect.selectedIndex].text}`, 'system');
+    const marketSymbolSpan = document.getElementById('market-symbol');
+    if (marketSymbolSpan) marketSymbolSpan.textContent = currentSymbol;
     
-    // Update offset hint
+    const selectedText = marketSelect.options[marketSelect.selectedIndex]?.text;
+    addLogEntry(`📊 Switched to ${selectedText} (${currentSymbol})`, 'system');
+    
+    // Update offset hint based on market
     const offsetHint = document.getElementById('offset-hint');
-    if (currentSymbol === 'R_75') offsetHint.textContent = 'Optimized: 0.35-0.40 for $0.20-0.50 net profit';
-    else if (currentSymbol === 'R_100') offsetHint.textContent = 'Optimized: 0.40-0.50 for $0.20-0.50 net profit';
-    else offsetHint.textContent = 'Adjust based on volatility';
+    if (offsetHint) {
+        if (currentSymbol === 'R_75') {
+            offsetHint.textContent = 'Recommended: 0.50-0.65 for 2.20x+ payout';
+            if (offsetInput && !offsetInput.disabled) offsetInput.value = 0.55;
+        } else if (currentSymbol === 'R_100') {
+            offsetHint.textContent = 'Recommended: 0.60-0.80 for 2.20x+ payout';
+            if (offsetInput && !offsetInput.disabled) offsetInput.value = 0.70;
+        } else {
+            offsetHint.textContent = 'Adjust offset to achieve 2.20x+ payout';
+        }
+    }
     
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ forget_all: 'ticks', req_id: Date.now() }));
@@ -683,32 +748,26 @@ function onMarketChange() {
 }
 
 // ===== Event Listeners =====
-connectBtn.addEventListener('click', connectWithToken);
-startBtn.addEventListener('click', startBot);
-stopBtn.addEventListener('click', stopBot);
-emergencyBtn.addEventListener('click', emergencyStop);
-demoBtn.addEventListener('click', () => switchAccount('demo'));
-realBtn.addEventListener('click', () => switchAccount('real'));
-marketSelect.addEventListener('change', onMarketChange);
-pauseTicksBtn.addEventListener('click', toggleTickDisplay);
-closeHigherBtn.addEventListener('click', () => closeContract('higher'));
-closeLowerBtn.addEventListener('click', () => closeContract('lower'));
-closeBothBtn.addEventListener('click', closeBothContracts);
-
-// Auto-close toggle (create if not exists)
-let autoCloseToggle = document.createElement('input');
-autoCloseToggle.type = 'checkbox';
-autoCloseToggle.id = 'auto-close-toggle';
-autoCloseToggle.checked = true;
-autoCloseToggle.style.display = 'none';
-document.body.appendChild(autoCloseToggle);
-window.autoCloseToggle = autoCloseToggle;
+if (connectBtn) connectBtn.addEventListener('click', connectWithToken);
+if (startBtn) startBtn.addEventListener('click', startBot);
+if (stopBtn) stopBtn.addEventListener('click', stopBot);
+if (emergencyBtn) emergencyBtn.addEventListener('click', emergencyStop);
+if (demoBtn) demoBtn.addEventListener('click', () => switchAccount('demo'));
+if (realBtn) realBtn.addEventListener('click', () => switchAccount('real'));
+if (marketSelect) marketSelect.addEventListener('change', onMarketChange);
+if (pauseTicksBtn) pauseTicksBtn.addEventListener('click', toggleTickDisplay);
+if (closeHigherBtn) closeHigherBtn.addEventListener('click', () => closeContract('higher'));
+if (closeLowerBtn) closeLowerBtn.addEventListener('click', () => closeContract('lower'));
+if (closeBothBtn) closeBothBtn.addEventListener('click', closeBothContracts);
 
 // Load saved token on startup
 window.addEventListener('load', () => {
     const token = localStorage.getItem('deriv_token');
     if (token) {
-        document.getElementById('api-token').value = token;
+        const tokenInput = document.getElementById('api-token');
+        if (tokenInput) tokenInput.value = token;
         connectWithToken();
     }
+    addLogEntry('🛡️ Hedge Bot v2.0 Ready', 'system');
+    addLogEntry('💡 Connect your API token and click Start Bot', 'system');
 });
